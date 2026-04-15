@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+env/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# Data
+test_data/
+outputs/
+artifacts/
+*.log
+
+# Secrets
+.env
+*.key
+*.pem

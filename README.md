@@ -12,6 +12,7 @@ Current backend capabilities:
 - create and track a load batch
 - return batch summary and validation errors
 - download validation errors as CSV
+- ask natural-language database questions via GROQ AI SQL Assistant
 
 The ingestion flow supports uploaded files and local file testing only.
 
@@ -48,6 +49,64 @@ Open the API docs in your browser:
 Health check:
 
 - `http://127.0.0.1:8000/api/health`
+
+## AI SQL Assistant (GROQ)
+
+The backend includes an AI SQL Assistant that converts natural-language questions
+to SQL and executes read-only queries against your database.
+
+### Environment variable
+
+Set this in `.env` before using the AI endpoint:
+
+```env
+GROQ_API_KEY=your_groq_api_key
+```
+
+### Backend endpoint
+
+- `POST /api/ai/query`
+
+Example request body:
+
+```json
+{
+  "question": "Show top 10 Level2 elements by total cost"
+}
+```
+
+Example response shape:
+
+```json
+{
+  "question": "Show top 10 Level2 elements by total cost",
+  "generated_sql": "SELECT TOP 10 L2Name, TotalCost FROM stg.Level2 ORDER BY TotalCost DESC",
+  "row_count": 10,
+  "rows": [
+    {
+      "L2Name": "Frame",
+      "TotalCost": 1050875.0
+    }
+  ]
+}
+```
+
+### Safety guardrails
+
+The AI endpoint is read-only by design:
+
+- single SQL statement only
+- SQL must start with `SELECT`
+- mutating/DDL keywords are blocked (`INSERT`, `UPDATE`, `DELETE`, `DROP`, etc.)
+
+### Frontend usage
+
+The React app includes an **AI SQL Assistant** section where users can:
+
+- enter natural-language questions
+- click preset question chips
+- run the AI query
+- inspect generated SQL and returned rows
 
 ## Backend API
 

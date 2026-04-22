@@ -50,6 +50,25 @@ Health check:
 
 - `http://127.0.0.1:8000/api/health`
 
+## Run The Frontend
+
+From the repository root:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open in browser:
+
+- `http://127.0.0.1:5173`
+
+Notes:
+
+- Keep the backend running on `http://127.0.0.1:8000` while using the frontend.
+- Vite is configured to proxy `/api` requests to the backend.
+
 ## AI SQL Assistant (GROQ)
 
 The backend includes an AI SQL Assistant that converts natural-language questions
@@ -101,12 +120,54 @@ The AI endpoint is read-only by design:
 
 ### Frontend usage
 
-The React app includes an **AI SQL Assistant** section where users can:
+The React app includes a dedicated **AI QS Assistant** page where users can:
 
 - enter natural-language questions
 - click preset question chips
 - run the AI query
 - inspect generated SQL and returned rows
+
+## AI Report Draft Endpoint
+
+The backend includes a draft-report endpoint used by the frontend **AI Report Generation** page.
+
+### Backend endpoint
+
+- `POST /api/ai/report-draft`
+
+Example request body (preferred):
+
+```json
+{
+  "project_id": "P2402"
+}
+```
+
+Optional fallback request body:
+
+```json
+{
+  "load_batch_id": "8d5f3dcb-2f4f-4e22-9d30-123456789abc"
+}
+```
+
+Example response shape:
+
+```json
+{
+  "project_id": "P2402",
+  "load_batch_id": "8d5f3dcb-2f4f-4e22-9d30-123456789abc",
+  "source_file_name": "P2402_benchmark.xlsx",
+  "report_context": {
+    "project": {
+      "project_id": "P2402"
+    },
+    "audit": {
+      "load_batch_id": "8d5f3dcb-2f4f-4e22-9d30-123456789abc"
+    }
+  }
+}
+```
 
 ## Backend API
 
@@ -119,6 +180,7 @@ Current backend endpoints:
 - `GET /api/batches/{load_batch_id}/error-rows`
 - `GET /api/batches/{load_batch_id}/download-errors`
 - `POST /api/ai/query`
+- `POST /api/ai/report-draft`
 
 ## How To Test The Backend
 
@@ -168,10 +230,19 @@ curl -X POST "http://127.0.0.1:8000/api/ai/query" `
   -d "{\"question\":\"Show top 10 Level2 elements by total cost\"}"
 ```
 
+AI report draft example:
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/api/ai/report-draft" `
+  -H "Content-Type: application/json" `
+  -d "{\"project_id\":\"P2402\"}"
+```
+
 ## Notes
 
 - The upload form field name must be `file`.
 - `load_batch_id` is returned by the upload endpoint and is required for all batch endpoints.
+- `project_id` is the preferred key for `POST /api/ai/report-draft`; backend resolves the latest matching batch.
 - Validation errors can be inspected via JSON endpoints or downloaded as CSV.
 - `error-rows` includes `RowData` for row-level troubleshooting and mapped SUMMARY cell references when available.
 - AI query endpoint is read-only and enforces single-statement `SELECT` SQL generation.

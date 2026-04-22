@@ -1,4 +1,6 @@
 import type {
+  AIReportDraftResponse,
+  AIReportDraftSaveResponse,
   AIQueryResponse,
   BatchSummary,
   IngestionRunResponse,
@@ -107,4 +109,92 @@ export async function runAIQuery(question: string): Promise<AIQueryResponse> {
     body: JSON.stringify({ question }),
   });
   return parseJsonResponse<AIQueryResponse>(response);
+}
+
+export async function createAIReportDraft(
+  projectId: string,
+  options?: { regenerateFresh?: boolean },
+): Promise<AIReportDraftResponse> {
+  const response = await fetch("/api/ai/report-draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_id: projectId,
+      regenerate_fresh: Boolean(options?.regenerateFresh),
+    }),
+  });
+  return parseJsonResponse<AIReportDraftResponse>(response);
+}
+
+export async function saveAIReportDraft(payload: {
+  project_id?: string | null;
+  load_batch_id: string;
+  source_file_name?: string | null;
+  draft_sections: Record<string, unknown>;
+}): Promise<AIReportDraftSaveResponse> {
+  const response = await fetch("/api/ai/report-draft/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse<AIReportDraftSaveResponse>(response);
+}
+
+async function exportAIReport(
+  endpoint: string,
+  payload: {
+    project_id?: string | null;
+    load_batch_id: string;
+    source_file_name?: string | null;
+    draft_sections: Record<string, unknown>;
+    report_context: Record<string, unknown>;
+  },
+): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      detail = body.detail ?? detail;
+    } catch {
+      // no-op
+    }
+    throw new Error(detail || "Export failed.");
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+  const fileName = filenameMatch?.[1] ?? "report";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function exportAIReportDocx(payload: {
+  project_id?: string | null;
+  load_batch_id: string;
+  source_file_name?: string | null;
+  draft_sections: Record<string, unknown>;
+  report_context: Record<string, unknown>;
+}): Promise<void> {
+  await exportAIReport("/api/ai/report-export/docx", payload);
+}
+
+export async function exportAIReportPdf(payload: {
+  project_id?: string | null;
+  load_batch_id: string;
+  source_file_name?: string | null;
+  draft_sections: Record<string, unknown>;
+  report_context: Record<string, unknown>;
+}): Promise<void> {
+  await exportAIReport("/api/ai/report-export/pdf", payload);
 }

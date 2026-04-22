@@ -1,0 +1,86 @@
+{
+  "project": {
+    "project_id": "",
+    "project_name": "",
+    "project_description": "",
+    "location": ""
+  },
+  "tender_meta": {
+    "tenders_issued_date": "",
+    "tender_deadline_date": "",
+    "addendums_issued_count": 0,
+    "responses_count": 0,
+    "tenderers": []
+  },
+  "selected_contractor": {
+    "name": "",
+    "selection_reason_tags": [],
+    "approved_by_qs": false
+  },
+  "commercial": {
+    "construction_budget": 0.0,
+    "tender_comparison": [
+      {
+        "contractor": "",
+        "initial_tender_sum": 0.0,
+        "fixed_adjustments": 0.0,
+        "risk_adjustments": 0.0,
+        "final_adjusted_tender_sum": 0.0,
+        "variance_to_budget": 0.0
+      }
+    ],
+    "provisional_sums": [
+      {
+        "item": "",
+        "status": "",
+        "notes": ""
+      }
+    ]
+  },
+  "programme": {
+    "perenco_deadline": "",
+    "contractor_programmes": [
+      {
+        "contractor": "",
+        "precon_start": "",
+        "works_completion": "",
+        "notes": ""
+      }
+    ]
+  },
+  "budget_position": {
+    "loose_ffe": 0.0,
+    "consultant_fees": 0.0,
+    "unallocated_risk_allowance": 0.0,
+    "overall_budget": 0.0,
+    "overall_position_by_contractor": [
+      {
+        "contractor": "",
+        "total": 0.0,
+        "within_budget": false
+      }
+    ]
+  },
+  "element_analysis": {
+    "selected_contractor_l2": [
+      {
+        "l1_name": "",
+        "l2_name": "",
+        "rate": 0.0,
+        "total_cost": 0.0
+      }
+    ]
+  },
+  "appendices": [
+    {
+      "code": "",
+      "title": ""
+    }
+  ],
+  "audit": {
+    "load_batch_id": "",
+    "source_file_name": "",
+    "generated_at_utc": ""
+  }
+}
+

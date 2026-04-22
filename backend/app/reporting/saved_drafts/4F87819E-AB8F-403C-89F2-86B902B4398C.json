@@ -1,0 +1,29 @@
+{
+  "project_id": "P2402",
+  "load_batch_id": "4F87819E-AB8F-403C-89F2-86B902B4398C",
+  "source_file_name": "Template Comparison Document - RS.xlsx",
+  "draft_sections": {
+    "executive_summary": {
+      "title": "01 - Executive Summary",
+      "body": "<table style=\"border-collapse: collapse; width: 100%;\" border=\"1\"><colgroup><col style=\"width: 33.2692%;\"><col style=\"width: 33.2692%;\"><col style=\"width: 33.2692%;\"></colgroup>\n<tbody>\n<tr>\n<td>&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;&nbsp;</td>\n<td>&nbsp;</td>\n<td>&nbsp;</td>\n</tr>\n<tr>\n<td>&nbsp;</td>\n<td>&nbsp;</td>\n<td>&nbsp;</td>\n</tr>\n</tbody>\n</table>\n<p>Project P2402 (Blythe Road) in London has been evaluated against current commercial benchmarks. Bauvill currently presents the strongest commercial position based on adjusted tender outcomes. Current final adjusted tender sum: 2,961,924.52. Applied fixed adjustments: 0.00. Applied risk adjustments: 0.00.</p>",
+      "recommendation": "<p>Based on the tender evaluation for Project P2402, Blythe Road, it is recommended that Bauvill be appointed as the preferred contractor, with a Final Adjusted Tender Sum of $2,961,924.52. This recommendation is supported by the fact that the tender sum has been thoroughly assessed and adjusted, with no fixed or risk adjustments required, resulting in a Construction Baseline that aligns with the tendered amount. The commercial position presented by Bauvill offers the best value for the project, and it is considered that their proposal demonstrates a thorough understanding of the project requirements. Therefore, it is considered that accepting the Bauvill tender will provide the most suitable outcome for the project, and it is recommended that the client proceeds with the appointment of Bauvill as the contractor for Project P2402, Blythe Road.</p>",
+      "next_steps": [
+        "Confirm contractor recommendation with internal review.",
+        "Validate budget and risk allowances before client issue.",
+        "Prepare issue-ready report pack and appendices."
+      ]
+    },
+    "commercial_analysis": {
+      "title": "04 - Commercial Analysis",
+      "body": "<p>Commercial analysis for Blythe Road (Project ID: P2402) is based on staged Level2 and adjustments data. Construction baseline total: 2,961,924.52. Final adjusted tender sum: 2,961,924.52. Fixed adjustments total: 0.00. Risk adjustments total: 0.00. QS should review provisional sums and any excluded adjustments before final issue.</p>",
+      "programme_note": "",
+      "headline_metrics": {
+        "construction_baseline_total": 2961924.52,
+        "final_adjusted_tender_sum": 2961924.52,
+        "fixed_adjustments_total": 0,
+        "risk_adjustments_total": 0
+      }
+    }
+  },
+  "saved_at_utc": "2026-04-22T12:18:07.585757+00:00"
+}

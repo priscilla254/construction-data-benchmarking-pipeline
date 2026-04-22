@@ -56,3 +56,42 @@ class AIQueryResponse(BaseModel):
     generated_sql: str
     row_count: int
     rows: list[dict[str, Any]]
+
+
+class AIReportDraftRequest(BaseModel):
+    project_id: str | None = None
+    load_batch_id: str | None = None
+    regenerate_fresh: bool = False
+
+
+class AIReportDraftResponse(BaseModel):
+    project_id: str | None = None
+    load_batch_id: str
+    source_file_name: str | None = None
+    saved_draft_loaded: bool = False
+    saved_at_utc: str | None = None
+    draft_sections: dict[str, Any]
+    report_context: dict[str, Any]
+
+
+class AIReportDraftSaveRequest(BaseModel):
+    project_id: str | None = None
+    load_batch_id: str
+    source_file_name: str | None = None
+    draft_sections: dict[str, Any]
+
+
+class AIReportDraftSaveResponse(BaseModel):
+    project_id: str | None = None
+    load_batch_id: str
+    source_file_name: str | None = None
+    draft_sections: dict[str, Any]
+    saved_at_utc: str
+
+
+class AIReportExportRequest(BaseModel):
+    project_id: str | None = None
+    load_batch_id: str
+    source_file_name: str | None = None
+    draft_sections: dict[str, Any]
+    report_context: dict[str, Any]

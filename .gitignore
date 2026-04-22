@@ -11,6 +11,8 @@ test_data/
 outputs/
 artifacts/
 *.log
+*.xlsx
+backend/app/templates/
 
 # Secrets
 venv/

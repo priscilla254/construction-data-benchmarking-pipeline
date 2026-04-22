@@ -41,3 +41,21 @@ export type AIQueryResponse = {
   row_count: number;
   rows: Record<string, unknown>[];
 };
+
+export type AIReportDraftResponse = {
+  project_id?: string | null;
+  load_batch_id: string;
+  source_file_name?: string | null;
+  saved_draft_loaded?: boolean;
+  saved_at_utc?: string | null;
+  draft_sections: Record<string, unknown>;
+  report_context: Record<string, unknown>;
+};
+
+export type AIReportDraftSaveResponse = {
+  project_id?: string | null;
+  load_batch_id: string;
+  source_file_name?: string | null;
+  draft_sections: Record<string, unknown>;
+  saved_at_utc: string;
+};

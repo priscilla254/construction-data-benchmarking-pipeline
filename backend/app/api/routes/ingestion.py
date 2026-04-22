@@ -1,7 +1,12 @@
 from fastapi import APIRouter, File, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ...schemas.ingestion import (
+    AIReportExportRequest,
+    AIReportDraftSaveRequest,
+    AIReportDraftSaveResponse,
+    AIReportDraftRequest,
+    AIReportDraftResponse,
     AIQueryRequest,
     AIQueryResponse,
     BatchSummaryResponse,
@@ -10,6 +15,8 @@ from ...schemas.ingestion import (
     ValidationErrorDetailResponse,
     ValidationErrorRowResponse,
 )
+from ...services.ai_report_service import build_report_draft, save_report_draft_state
+from ...services.report_export_service import export_report_docx, export_report_pdf
 from ...services.ingestion_service import (
     build_batch_error_csv,
     get_batch_error_counts,
@@ -76,3 +83,44 @@ def download_batch_error_details(load_batch_id: str) -> StreamingResponse:
 def run_ai_sql_query(payload: AIQueryRequest) -> AIQueryResponse:
     result = run_ai_query(payload.question)
     return AIQueryResponse(**result)
+
+
+@router.post("/ai/report-draft", response_model=AIReportDraftResponse)
+def create_ai_report_draft(payload: AIReportDraftRequest) -> AIReportDraftResponse:
+    result = build_report_draft(
+        project_id=payload.project_id,
+        load_batch_id=payload.load_batch_id,
+        use_saved_draft=not payload.regenerate_fresh,
+    )
+    return AIReportDraftResponse(**result)
+
+
+@router.post("/ai/report-draft/save", response_model=AIReportDraftSaveResponse)
+def save_ai_report_draft(payload: AIReportDraftSaveRequest) -> AIReportDraftSaveResponse:
+    result = save_report_draft_state(
+        load_batch_id=payload.load_batch_id,
+        project_id=payload.project_id,
+        source_file_name=payload.source_file_name,
+        draft_sections=payload.draft_sections,
+    )
+    return AIReportDraftSaveResponse(**result)
+
+
+@router.post("/ai/report-export/docx")
+def export_ai_report_docx(payload: AIReportExportRequest) -> FileResponse:
+    output_path = export_report_docx(payload.model_dump())
+    return FileResponse(
+        path=output_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=output_path.name,
+    )
+
+
+@router.post("/ai/report-export/pdf")
+def export_ai_report_pdf(payload: AIReportExportRequest) -> FileResponse:
+    output_path = export_report_pdf(payload.model_dump())
+    return FileResponse(
+        path=output_path,
+        media_type="application/pdf",
+        filename=output_path.name,
+    )

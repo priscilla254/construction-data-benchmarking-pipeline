@@ -37,6 +37,29 @@ a {
   padding: 40px 24px 56px;
 }
 
+.top-nav {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.tab-button {
+  border: 1px solid #d0d7de;
+  background: #fff;
+  color: #344054;
+  border-radius: 12px;
+  min-height: 40px;
+  padding: 0 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tab-button-active {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #175cd3;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.8fr) minmax(260px, 0.9fr);
@@ -461,6 +484,24 @@ a {
   border: 1px solid #e2e8f0;
   color: #475467;
   font-size: 0.86rem;
+}
+
+.report-section-editor {
+  border-style: dashed;
+}
+
+.report-editor-textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.report-preview-html {
+  min-height: 120px;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px 14px;
+  color: #101828;
 }
 
 @media (max-width: 980px) {

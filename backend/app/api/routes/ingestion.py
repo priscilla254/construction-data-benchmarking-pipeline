@@ -15,6 +15,7 @@ from ...schemas.ingestion import (
     ValidationErrorDetailResponse,
     ValidationErrorRowResponse,
 )
+from ...services.ai_query_service import run_ai_query
 from ...services.ai_report_service import build_report_draft, save_report_draft_state
 from ...services.report_export_service import export_report_docx, export_report_pdf
 from ...services.ingestion_service import (
@@ -23,7 +24,6 @@ from ...services.ingestion_service import (
     get_batch_error_details,
     get_batch_error_rows,
     get_batch_summary,
-    run_ai_query,
     run_ingestion_from_upload,
 )
 

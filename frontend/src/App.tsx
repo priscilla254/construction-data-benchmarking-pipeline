@@ -709,7 +709,7 @@ function App() {
                     </div>
                   </div>
 
-                  <details className="row-data-details" style={{ marginTop: "12px" }} open>
+                  <details className="row-data-details" style={{ marginTop: "12px" }}>
                     <summary>Draft sections JSON</summary>
                     <pre className="row-data-pre">
                       {JSON.stringify(reportDraft.draft_sections, null, 2)}
@@ -939,7 +939,7 @@ function App() {
                     </div>
                   </div>
 
-                  <details className="row-data-details" style={{ marginTop: "12px" }} open>
+                  <details className="row-data-details" style={{ marginTop: "12px" }}>
                     <summary>Generated SQL</summary>
                     <pre className="row-data-pre">{aiResult.generated_sql}</pre>
                   </details>

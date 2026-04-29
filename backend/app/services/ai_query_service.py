@@ -7,14 +7,23 @@ from groq import Groq
 
 from ingestion_engine import excel_file_ingestion as ingestion
 
+
+
+"""
+This service is responsible for generating SQL queries from natural language questions.
+It uses the groq API to generate the SQL queries. lets users ask plain English questions, and returns the query result as structured data.
+It uses GROQ'S LLM to generate sql, validates it, runs it against the DB and automatically retires iwth error correction upto 3 times.
+"""
+
 MAX_AI_SQL_ATTEMPTS = 3
 READ_ONLY_SQL_PATTERN = re.compile(r"^\s*select\b", re.IGNORECASE | re.DOTALL)
 SQL_FORBIDDEN_PATTERN = re.compile(
     r"\b(insert|update|delete|drop|alter|truncate|create|exec|execute|merge)\b",
     re.IGNORECASE,
 )
+TECHNICAL_KEY_COLUMN_PATTERN = re.compile(r"key$", re.IGNORECASE)
 
-
+# helper function to get the groq client.
 def _get_groq_client() -> Groq:
     api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key:
@@ -22,6 +31,7 @@ def _get_groq_client() -> Groq:
     return Groq(api_key=api_key)
 
 
+# helper function to extract the SQL from the GROQ response.
 def _extract_sql(text: str) -> str:
     cleaned = (text or "").strip()
     if cleaned.startswith("```"):
@@ -31,6 +41,8 @@ def _extract_sql(text: str) -> str:
     return cleaned
 
 
+# helper function to validate the SQL query is read-only.
+# rejects if it contains any of the forbidden keywords.
 def _validate_sql_read_only(sql: str) -> None:
     if ";" in sql.strip().rstrip(";"):
         raise HTTPException(
@@ -48,7 +60,14 @@ def _validate_sql_read_only(sql: str) -> None:
             detail="Generated SQL contains forbidden keywords.",
         )
 
-
+""""
+helper function to build the schema context string for matched tables in the database.
+it uses the INFORMATION_SCHEMA.COLUMNS view to get the columns for the matched tables.
+it returns a string that can be used in the system prompt to help the LLM generate the SQL query.
+reduces hallucinated table/column names and helpes AI choose valid joins.
+adapts automatically when DB schema changes.
+has a fallback mechanism to handle cases where the schema introspection fails.
+"""
 def _build_tables_context(
     table_schema: str,
     table_name_like: str,
@@ -88,6 +107,25 @@ def _build_tables_context(
     return "\n".join(lines)
 
 
+def _remove_technical_key_columns(rows: list[dict]) -> list[dict]:
+    """
+    Remove surrogate/technical key columns from API output for end-user readability.
+    """
+    filtered_rows: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            filtered_rows.append(row)
+            continue
+        filtered = {
+            key: value
+            for key, value in row.items()
+            if not TECHNICAL_KEY_COLUMN_PATTERN.search(str(key))
+        }
+        # If filtering removes every field, keep the original row to avoid empty objects.
+        filtered_rows.append(filtered if filtered else row)
+    return filtered_rows
+
+
 def generate_sql_from_question(question: str) -> str:
     if not question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
@@ -104,12 +142,14 @@ def generate_sql_from_question(question: str) -> str:
     dim_tables_context = _build_tables_context(
         table_schema="dbo",
         table_name_like="Dim%",
-        fallback_lines=["- dbo.DimSector (SectorKey, SectorCode, SectorName)"],
+        fallback_lines=[
+            "- dbo.DimSector (SectorKey, SectorCode, SectorName)",
+        ],
     )
     fact_tables_context = _build_tables_context(
         table_schema="dbo",
         table_name_like="Fact%",
-        fallback_lines=[],
+        fallback_lines="",
     )
 
     system_prompt = f"""
@@ -137,6 +177,7 @@ Rules:
 9. When using GIFA in business queries, prefer joining Fact tables to dbo.DimCostSet via available cost set keys.
 10. Never invent column names or join keys. Only use exact column names listed in schema context.
 11. If a suitable join key is not present in both tables, avoid that join and answer from available tables.
+12. In SELECT output, avoid technical key columns ending in "Key" (e.g., SectorKey, LocationKey) unless explicitly requested.
 """
 
     client = _get_groq_client()
@@ -168,12 +209,17 @@ def regenerate_sql_from_error(question: str, failed_sql: str, db_error: str) -> 
     dim_tables_context = _build_tables_context(
         table_schema="dbo",
         table_name_like="Dim%",
-        fallback_lines=["- dbo.DimSector (SectorKey, SectorCode, SectorName)"],
+        fallback_lines=[
+            "- dbo.DimSector (SectorKey, SectorCode, SectorName)",
+            "- dbo.DimCostSet (CostSetKey, ProjectID, GIFA)",
+        ],
     )
     fact_tables_context = _build_tables_context(
         table_schema="dbo",
         table_name_like="Fact%",
-        fallback_lines=[],
+        fallback_lines=[
+            "- dbo.FactBenchmark (CostSetKey, TotalCost)",
+        ],
     )
 
     system_prompt = f"""
@@ -201,6 +247,7 @@ Rules:
 7. For "cost per m2" questions, calculate cost/GIFA with NULLIF for divide-by-zero protection.
 8. Never invent column names or join keys. Use exact schema names only.
 9. If a join key does not exist in both joined tables, remove that join.
+10. In SELECT output, avoid technical key columns ending in "Key" (e.g., SectorKey, LocationKey) unless explicitly requested.
 """
 
     client = _get_groq_client()
@@ -226,16 +273,17 @@ Rules:
     _validate_sql_read_only(repaired_sql)
     return repaired_sql
 
-
+# this is the main function that orchestrates the whole process and is the one FastAPI route would call.
 def run_ai_query(question: str) -> dict:
+    # generate the SQL query from the question.
     generated_sql = generate_sql_from_question(question)
-
+# get a database connection.
     conn = ingestion.get_connection()
     try:
         current_sql = generated_sql
         try:
             df = pd.read_sql_query(current_sql, conn)
-            rows = df.to_dict(orient="records")
+            rows = _remove_technical_key_columns(df.to_dict(orient="records"))
             return {
                 "question": question,
                 "generated_sql": current_sql,
@@ -252,7 +300,7 @@ def run_ai_query(question: str) -> dict:
                 )
                 try:
                     df = pd.read_sql_query(repaired_sql, conn)
-                    rows = df.to_dict(orient="records")
+                    rows = _remove_technical_key_columns(df.to_dict(orient="records"))
                     return {
                         "question": question,
                         "generated_sql": repaired_sql,

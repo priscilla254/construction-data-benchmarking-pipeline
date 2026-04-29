@@ -5,15 +5,31 @@ from decimal import Decimal
 from datetime import date, datetime
 
 from fastapi import HTTPException, UploadFile
-
 from ingestion_engine import excel_file_ingestion as ingestion
+
+"""
+This service is responsible for ingesting Excel files into the database.
+It uses the ingestion_engine library to process the files.
+it contains the business logic for handling excel file uploads, batch tracking, error reporting etc.
+it does not define routes,instead it provides functions that the routes can call.
+"""
 
 ROW_DATA_MARKER = "||ROW_DATA_JSON||"
 
-
+# process a local file
 def run_ingestion_from_path(input_path: str) -> dict:
     return ingestion.process_local_file(input_path)
 
+
+"""
+called when a user uploads a file via the web frontend.
+UploadFile is a fastAPI object that represents the uploaded file.
+it validates, filename exists, ends with .xlsx, and is not empty.
+then it reads the file into memory and calls the ingestion engine to process it.
+async keyword is used because reading the file is I/O operation that can be done asynchronously.
+under the hood, FastAPI hands off the read to an event loop so the server can handle other requests while waiting for the file to be read.
+returns a dictionary with the load batch id, status, error count, and source file name.
+"""
 
 async def run_ingestion_from_upload(upload: UploadFile) -> dict:
     if not upload.filename:
@@ -27,18 +43,20 @@ async def run_ingestion_from_upload(upload: UploadFile) -> dict:
 
     return ingestion.process_uploaded_file(upload.filename, file_bytes)
 
-
+# batch inspection functions.
+# returns the summary record (e.g. status, error count, timestamps. etc.) for a given load batch id.
+# if no batch is found, raises a 404 error.
 def get_batch_summary(load_batch_id: str) -> dict:
     summary = ingestion.get_batch_summary(load_batch_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Load batch not found.")
     return summary
 
-
+# returns a list of error counts grouped by severity, error type, sheet name.
 def get_batch_error_counts(load_batch_id: str) -> list[dict]:
     return ingestion.get_batch_error_counts(load_batch_id)
 
-
+# returns a detailed list of every validation error.
 def get_batch_error_details(load_batch_id: str) -> list[dict]:
     details = ingestion.get_batch_error_details(load_batch_id)
     cleaned: list[dict] = []
@@ -50,7 +68,8 @@ def get_batch_error_details(load_batch_id: str) -> list[dict]:
         cleaned.append(updated)
     return cleaned
 
-
+# helper function to convert SQL values to a format that can be serialized to JSON.
+# this is necessary because SQL values are often stored as Decimal or datetime objects, which are not JSON serializable.
 def _coerce_sql_value(value):
     if isinstance(value, Decimal):
         return float(value)
@@ -59,6 +78,8 @@ def _coerce_sql_value(value):
     return value
 
 
+# helper function to map sheet names to their corresponding table names in the database.
+# this is necessary because the ingestion engine returns sheet names, but the database tables have different names.
 def _table_name_for_sheet(sheet_name: str | None) -> str | None:
     mapping = {
         "ProjectInformation": "stg.ProjectInformation",

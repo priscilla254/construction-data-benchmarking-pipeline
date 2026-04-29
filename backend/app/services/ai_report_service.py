@@ -12,6 +12,27 @@ from groq import Groq
 
 from ingestion_engine import excel_file_ingestion as ingestion
 
+"""
+This service is responsible for generating AI-driven report drafts from ingested project and tender data.
+It uses the groq API to generate the report sections and recommendations.
+it contains the business logic for handling the report generation process.
+it uses the ingestion_engine module to fetch project and tender data from the database.
+it uses the groq API to generate the report sections and recommendations.
+it uses the report_export_service module to export the report to a word and pdf file.
+
+how it works:
+Loads a template JSON that defines the expected structure of the report (project, tender_meta, commercial, element_analysis, etc.).
+
+Queries the database to fetch project information, Level 2 costs, and adjustments for a given load_batch_id (or project_id).
+
+Populates the JSON context with actual numbers and metadata.
+
+Calls Groq (LLM) to generate human‑readable narrative sections from that context.
+
+Stores drafts locally so users can resume editing later.
+
+Returns a final draft (draft_sections + report_context) that the frontend can display in forms and then pass to the export service.
+"""
 
 REPORT_TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent
@@ -20,7 +41,7 @@ REPORT_TEMPLATE_PATH = (
 )
 SAVED_DRAFTS_DIR = Path(__file__).resolve().parent.parent / "reporting" / "saved_drafts"
 
-
+# load the baseline report-context JSON template used by AI report generation.
 def load_report_context_template() -> dict[str, Any]:
     """
     Load the baseline report-context JSON template used by AI report generation.
@@ -35,7 +56,7 @@ def _get_groq_client() -> Groq:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is not configured.")
     return Groq(api_key=api_key)
 
-
+# helper function to resolve the load_batch_id from the project_id.
 def _resolve_load_batch_id_from_project_id(project_id: str) -> str:
     sql = """
         SELECT TOP 1
@@ -72,6 +93,82 @@ def _fetch_project_information(load_batch_id: str) -> dict[str, Any] | None:
     """
     rows = ingestion.fetch_all(sql, (load_batch_id,))
     return rows[0] if rows else None
+
+
+def _fetch_tenderers_from_project_information(load_batch_id: str) -> list[str]:
+    """
+    Build a deduplicated tenderer list for the batch.
+    Prefer stg.ProjectTenderer (explicit tender list), then fall back to
+    stg.ProjectInformation.SelectedContractor legacy extraction.
+    """
+    sql_tenderers = """
+        SELECT
+            TendererName
+        FROM stg.ProjectTenderer
+        WHERE LoadBatchID = ?
+          AND LTRIM(RTRIM(ISNULL(TendererName, ''))) <> ''
+        ORDER BY RowNum ASC, StageProjectTendererID ASC
+    """
+    rows = []
+    try:
+        rows = ingestion.fetch_all(sql_tenderers, (load_batch_id,))
+    except Exception:
+        rows = []
+
+    if not rows:
+        sql = """
+        SELECT
+            SelectedContractor
+        FROM stg.ProjectInformation
+        WHERE LoadBatchID = ?
+          AND LTRIM(RTRIM(ISNULL(SelectedContractor, ''))) <> ''
+        ORDER BY RowNum ASC
+    """
+        rows = ingestion.fetch_all(sql, (load_batch_id,))
+
+    seen: set[str] = set()
+    tenderers: list[str] = []
+
+    for row in rows:
+        raw_value = str(
+            row.get("TendererName")
+            if row.get("TendererName") is not None
+            else row.get("SelectedContractor")
+            or ""
+        )
+        for part in raw_value.split(","):
+            name = part.strip()
+            if not name:
+                continue
+            normalized = name.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            tenderers.append(name)
+
+    return tenderers
+
+
+def _fetch_tenderer_review_rows(load_batch_id: str) -> list[dict[str, Any]]:
+    """
+    Prefer staged tender-review aggregates when available.
+    """
+    sql = """
+        SELECT
+            TendererName,
+            FinalAdjustedTenderSum,
+            VarianceToCostplan,
+            ConstructionBudget,
+            IsSelected
+        FROM stg.ProjectTenderer
+        WHERE LoadBatchID = ?
+        ORDER BY RowNum ASC, StageProjectTendererID ASC
+    """
+    try:
+        rows = ingestion.fetch_all(sql, (load_batch_id,))
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
 
 
 def _fetch_level2_rows(load_batch_id: str) -> list[dict[str, Any]]:
@@ -119,6 +216,8 @@ def _as_float(value: Any) -> float:
 def _populate_context_from_staging(
     context: dict[str, Any],
     project_row: dict[str, Any] | None,
+    tenderers: list[str],
+    tenderer_review_rows: list[dict[str, Any]],
     level2_rows: list[dict[str, Any]],
     adjustment_rows: list[dict[str, Any]],
 ) -> None:
@@ -129,10 +228,11 @@ def _populate_context_from_staging(
         context["project"]["location"] = project_row.get("LocationLabel") or ""
 
         selected_contractor = (project_row.get("SelectedContractor") or "").strip()
+        if tenderers:
+            context["tender_meta"]["tenderers"] = tenderers
+            context["tender_meta"]["responses_count"] = len(tenderers)
         if selected_contractor:
             context["selected_contractor"]["name"] = selected_contractor
-            context["tender_meta"]["tenderers"] = [selected_contractor]
-            context["tender_meta"]["responses_count"] = 1
             context["budget_position"]["overall_position_by_contractor"] = [
                 {
                     "contractor": selected_contractor,
@@ -191,17 +291,45 @@ def _populate_context_from_staging(
                 }
             )
 
-    context["commercial"]["construction_budget"] = total_cost_sum
-    context["commercial"]["tender_comparison"] = [
-        {
-            "contractor": context["selected_contractor"]["name"] or "",
-            "initial_tender_sum": total_cost_sum,
-            "fixed_adjustments": fixed_adjustments_sum,
-            "risk_adjustments": risk_adjustments_sum,
-            "final_adjusted_tender_sum": total_cost_sum + fixed_adjustments_sum + risk_adjustments_sum,
-            "variance_to_budget": 0.0,
-        }
-    ]
+    tender_comparison_rows: list[dict[str, Any]] = []
+    construction_budget_from_summary = None
+    for row in tenderer_review_rows:
+        contractor_name = str(row.get("TendererName") or "").strip()
+        if not contractor_name:
+            continue
+        final_adjusted = _as_float(row.get("FinalAdjustedTenderSum"))
+        variance_to_costplan = _as_float(row.get("VarianceToCostplan"))
+        construction_budget = _as_float(row.get("ConstructionBudget"))
+        if construction_budget_from_summary is None and construction_budget:
+            construction_budget_from_summary = construction_budget
+        tender_comparison_rows.append(
+            {
+                "contractor": contractor_name,
+                "initial_tender_sum": final_adjusted,
+                "fixed_adjustments": 0.0,
+                "risk_adjustments": 0.0,
+                "final_adjusted_tender_sum": final_adjusted,
+                "variance_to_construction_budget": variance_to_costplan,
+            }
+        )
+
+    context["commercial"]["construction_budget"] = (
+        construction_budget_from_summary if construction_budget_from_summary is not None else total_cost_sum
+    )
+    context["commercial"]["tender_comparison"] = (
+        tender_comparison_rows
+        if tender_comparison_rows
+        else [
+            {
+                "contractor": context["selected_contractor"]["name"] or "",
+                "initial_tender_sum": total_cost_sum,
+                "fixed_adjustments": fixed_adjustments_sum,
+                "risk_adjustments": risk_adjustments_sum,
+                "final_adjusted_tender_sum": total_cost_sum + fixed_adjustments_sum + risk_adjustments_sum,
+                "variance_to_construction_budget": 0.0,
+            }
+        ]
+    )
     context["commercial"]["provisional_sums"] = provisional_sums
 
     if context["budget_position"]["overall_position_by_contractor"]:
@@ -240,7 +368,7 @@ def _build_draft_sections(context: dict[str, Any]) -> dict[str, Any]:
         programme_notes = str(programme_rows[0].get("notes") or "")
 
     executive_body_fallback = (
-        f"Project {project_id} ({project_name})"
+        f"{project_name}"
         f"{' in ' + location if location else ''} has been evaluated against current commercial benchmarks.\n\n"
         f"{selected_contractor} currently presents the strongest commercial position based on adjusted tender outcomes.\n\n"
         f"Current final adjusted tender sum: {final_sum:,.2f}. "
@@ -249,7 +377,7 @@ def _build_draft_sections(context: dict[str, Any]) -> dict[str, Any]:
     )
 
     commercial_body_fallback = (
-        f"Commercial analysis for {project_name} (Project ID: {project_id}) is based on staged Level2 and adjustments data.\n\n"
+        f"Commercial analysis for {project_name} is based on staged Level2 and adjustments data.\n\n"
         f"Construction baseline total: {budget_total:,.2f}.\n"
         f"Final adjusted tender sum: {final_sum:,.2f}.\n"
         f"Fixed adjustments total: {fixed_adj:,.2f}.\n"
@@ -258,8 +386,8 @@ def _build_draft_sections(context: dict[str, Any]) -> dict[str, Any]:
     )
     introduction_fallback = (
         f"This report has been prepared by Costplan Services (South East) Ltd for {project_name} "
-        f"(Project ID: {project_id}){' in ' + location if location else ''}. "
-        "It summarises the tender position, recommendation, and key commercial considerations."
+        f"{'in ' + location if location else ''}. "
+        "The report has been produced to outline the tender process."
     )
 
     deterministic_facts = {
@@ -273,6 +401,7 @@ def _build_draft_sections(context: dict[str, Any]) -> dict[str, Any]:
         "risk_adjustments": risk_adj,
         "construction_baseline_total": budget_total,
     }
+    introduction_facts = {"project_name": project_name, "location": location}
 
     executive_body = _generate_groq_section_text(
         section_name="Executive Summary",
@@ -297,9 +426,11 @@ def _build_draft_sections(context: dict[str, Any]) -> dict[str, Any]:
         writing_brief=(
             "Write an introduction paragraph starting with: "
             "'This report has been prepared by Costplan Services (South East) Ltd'. "
-            "Reference the project and location."
+            "Reference the project and location. "
+            "Do not mention tenderer names or list contractors. "
+            "Finish by stating that the report has been produced to outline the tender process."
         ),
-        deterministic_facts=deterministic_facts,
+        deterministic_facts=introduction_facts,
         fallback=introduction_fallback,
     )
 
@@ -367,13 +498,11 @@ def _generate_groq_recommendation(
         "Write a concise professional QS recommendation paragraph for a client tender report. "
         "Do not mention staging pipelines, databases, AI, or technical systems. "
         "Do not mention internal identifiers such as Project ID. "
+        "Do not mention or restate numeric cost values because these are detailed in Tender Review. "
         "Focus on commercial position and decision rationale.\n\n"
         f"Project Name: {project_name}\n"
         f"Preferred Contractor: {selected_contractor}\n"
-        f"Final Adjusted Tender Sum: {final_sum:,.2f}\n"
-        f"Fixed Adjustments: {fixed_adj:,.2f}\n"
-        f"Risk Adjustments: {risk_adj:,.2f}\n"
-        f"Construction Baseline: {budget_total:,.2f}\n"
+        "Use the commercial context qualitatively without citing figures.\n"
     )
     try:
         completion = client.chat.completions.create(
@@ -409,8 +538,9 @@ def _generate_groq_section_text(
         "Rules:\n"
         "1. Use a professional quantity surveying tone for a client-facing tender report.\n"
         "2. Do not mention databases, staging tables, SQL, or AI.\n"
-        "3. Use only the facts provided below; do not invent or alter numbers.\n"
-        "4. Return one concise paragraph only.\n\n"
+        "3. Do not mention internal identifiers such as Project ID.\n"
+        "4. Use only the facts provided below; do not invent or alter numbers.\n"
+        "5. Return one concise paragraph only.\n\n"
         f"Facts:\n{json.dumps(deterministic_facts, ensure_ascii=True)}\n"
     )
     try:
@@ -445,7 +575,8 @@ def _generate_groq_next_steps(
         "1. Return JSON only in this exact format: {\"next_steps\": [\"...\", \"...\"]}\n"
         "2. Each step must be action-oriented and commercially practical.\n"
         "3. Do not mention SQL, staging tables, or AI.\n"
-        "4. Use only these facts; do not invent numbers.\n\n"
+        "4. Do not mention internal identifiers such as Project ID.\n"
+        "5. Use only these facts; do not invent numbers.\n\n"
         f"Facts:\n{json.dumps(deterministic_facts, ensure_ascii=True)}\n"
     )
     try:
@@ -571,9 +702,18 @@ def build_report_draft(
     context["project"]["project_id"] = project_id_clean
 
     project_row = _fetch_project_information(load_batch_id_clean)
+    tenderers = _fetch_tenderers_from_project_information(load_batch_id_clean)
+    tenderer_review_rows = _fetch_tenderer_review_rows(load_batch_id_clean)
     level2_rows = _fetch_level2_rows(load_batch_id_clean)
     adjustment_rows = _fetch_adjustments(load_batch_id_clean)
-    _populate_context_from_staging(context, project_row, level2_rows, adjustment_rows)
+    _populate_context_from_staging(
+        context,
+        project_row,
+        tenderers,
+        tenderer_review_rows,
+        level2_rows,
+        adjustment_rows,
+    )
 
     if not context["project"]["project_name"] and source_file_name:
         context["project"]["project_name"] = source_file_name.rsplit(".", 1)[0]

@@ -20,6 +20,7 @@ load_dotenv() # Load environment variables from .env file
 LOCAL_TEST_FILE_PATH = os.getenv("LOCAL_TEST_FILE_PATH", "").strip()
 PROCESS_ADJUSTMENTS = os.getenv("PROCESS_ADJUSTMENTS", "0").strip().lower() in {"1", "true", "yes", "y"}
 DEBUG_LEVEL2 = os.getenv("DEBUG_LEVEL2", "0").strip().lower() in {"1", "true", "yes", "y"}
+DB_LOCK_TIMEOUT_MS = int(os.getenv("DB_LOCK_TIMEOUT_MS", "15000").strip() or "15000")
 
 SERVER = os.getenv("SQL_SERVER")
 DATABASE = os.getenv("SQL_DB")
@@ -129,6 +130,7 @@ REQUIRED_COLUMNS = {
 # Staging table names
 STAGING_TABLES = {
     "ProjectInformation": "stg.ProjectInformation",
+    "ProjectTenderer": "stg.ProjectTenderer",
     "ProjectQuants": "stg.ProjectQuants",
     "ElementQuants_L2": "stg.ElementQuants_L2",
     "Level2": "stg.Level2",
@@ -143,7 +145,14 @@ STAGING_TABLES = {
 # creates and returns a connection to the 
 # sql server using connection string from the environment variables
 def get_connection():
-    return pyodbc.connect(SQL_CONNECTION_STRING)
+    conn = pyodbc.connect(SQL_CONNECTION_STRING)
+    # Prevent indefinite hangs when another session holds blocking locks.
+    # SQL Server error 1222 is raised when lock timeout is exceeded.
+    lock_timeout_ms = max(0, int(DB_LOCK_TIMEOUT_MS))
+    cur = conn.cursor()
+    cur.execute(f"SET LOCK_TIMEOUT {lock_timeout_ms}")
+    cur.close()
+    return conn
 
 # executes a non-query sql statement and commits the changes to the database
 # eg INSERT, UPDATE, DELETE, executing stored procedures.
@@ -1037,6 +1046,90 @@ def _normalize_summary_sheet(raw_df: pd.DataFrame, selected_contractor: str | No
     return out.dropna(how="all")
 
 
+def _extract_summary_tenderer_totals(raw_df: pd.DataFrame) -> list[dict[str, object]]:
+    """
+    Extract contractor totals from SUMMARY bottom rows.
+    Uses normalized-text matching for row labels and skips Average Tender pair.
+    """
+    if raw_df is None or raw_df.empty:
+        return []
+
+    header_idx = None
+    for i in range(min(10, len(raw_df))):
+        row_tokens = [normalize_text(v) for v in raw_df.iloc[i].tolist()]
+        has_code_col = any(t in {"ref", "reference", "code"} for t in row_tokens)
+        has_name_col = any(t in {"element", "name", "l2name"} for t in row_tokens)
+        if has_code_col and has_name_col:
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+
+    header_row = raw_df.iloc[header_idx].tolist()
+    ff_labels = _forward_fill_header_labels(header_row)
+
+    metric_row_idx = None
+    blocks: list[tuple[int, int]] = []
+    max_pairs = -1
+    for i in range(header_idx, min(header_idx + 14, len(raw_df))):
+        row_tokens = [normalize_text(v) for v in raw_df.iloc[i].tolist()]
+        row_blocks: list[tuple[int, int]] = []
+        for c in range(0, len(row_tokens) - 1):
+            if row_tokens[c] == "rate" and row_tokens[c + 1] in {"total", "totalcost", "amount", "value"}:
+                row_blocks.append((c, c + 1))
+        if len(row_blocks) > max_pairs:
+            max_pairs = len(row_blocks)
+            metric_row_idx = i
+            blocks = row_blocks
+    if metric_row_idx is None or not blocks:
+        return []
+
+    final_adjusted_row = None
+    variance_row = None
+    for i in range(metric_row_idx + 1, len(raw_df)):
+        row_vals = [clean_value(v) for v in raw_df.iloc[i].tolist()]
+        token = normalize_text(" ".join(str(v) for v in row_vals if v is not None))
+        if final_adjusted_row is None and "totaltendersumfinaladjusted" in token:
+            final_adjusted_row = i
+        if variance_row is None and "variancefromcostplan" in token:
+            variance_row = i
+    if final_adjusted_row is None and variance_row is None:
+        return []
+
+    results: list[dict[str, object]] = []
+    for rate_col, total_col in blocks:
+        label_raw = ""
+        if total_col < len(ff_labels) and ff_labels[total_col]:
+            label_raw = str(ff_labels[total_col] or "")
+        elif rate_col < len(ff_labels) and ff_labels[rate_col]:
+            label_raw = str(ff_labels[rate_col] or "")
+        label = re.sub(r"\s+", " ", label_raw).strip()
+        label_token = normalize_text(label)
+        if not label or "averagetender" in label_token:
+            continue
+
+        final_adjusted = None
+        variance_to_costplan = None
+        construction_budget = None
+
+        if final_adjusted_row is not None and total_col < raw_df.shape[1]:
+            final_adjusted = to_decimal(raw_df.iat[final_adjusted_row, total_col])
+        if variance_row is not None and total_col < raw_df.shape[1]:
+            variance_to_costplan = to_decimal(raw_df.iat[variance_row, total_col])
+        if final_adjusted is not None and variance_to_costplan is not None:
+            construction_budget = final_adjusted - variance_to_costplan
+
+        results.append(
+            {
+                "TendererLabel": label,
+                "FinalAdjustedTenderSum": final_adjusted,
+                "VarianceToCostplan": variance_to_costplan,
+                "ConstructionBudget": construction_budget,
+            }
+        )
+    return results
+
+
 def _normalize_project_information_sheet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -1080,18 +1173,65 @@ def _normalize_project_information_sheet(df: pd.DataFrame) -> pd.DataFrame:
     }
 
     out: dict[str, object] = {}
+    contractor_label_pattern = re.compile(r"^contractor\s*\d+$", re.IGNORECASE)
     for _, row in df.iterrows():
         k = clean_value(row.get(key_col))
         v = clean_value(row.get(val_col))
         if k is None:
             continue
-        canonical = key_map.get(normalize_text(k))
+        key_text = str(k).strip()
+        canonical = key_map.get(normalize_text(key_text))
+        if canonical is None and contractor_label_pattern.match(key_text):
+            canonical = re.sub(r"\s+", " ", key_text.title())
         if canonical:
             # Keep first meaningful value; do not overwrite with null from later rows.
             if v is not None or canonical not in out:
                 out[canonical] = v
 
     return pd.DataFrame([out]) if out else df
+
+
+def _is_placeholder_tenderer_name(value: str) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return True
+    low = text.casefold()
+    if low in {"tbd", "n/a", "na", "-", "--"}:
+        return True
+    if re.match(r"^insert\s+contractor\b", low):
+        return True
+    return False
+
+
+def _extract_tenderers_from_project_information_df(
+    project_info_df: pd.DataFrame,
+) -> list[tuple[str, str]]:
+    """
+    Returns list of (TendererLabel, TendererName) from columns like Contractor 1..N.
+    """
+    if project_info_df is None or project_info_df.empty:
+        return []
+
+    contractor_label_pattern = re.compile(r"^Contractor\s*\d+$", re.IGNORECASE)
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+
+    for _, row in project_info_df.iterrows():
+        for col in project_info_df.columns:
+            col_name = str(col).strip()
+            if not contractor_label_pattern.match(col_name):
+                continue
+            raw_val = clean_value(row.get(col))
+            name = str(raw_val).strip() if raw_val is not None else ""
+            if _is_placeholder_tenderer_name(name):
+                continue
+            dedupe_key = name.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            label = re.sub(r"\s+", " ", col_name.title())
+            results.append((label, name))
+    return results
 
 
 def _normalize_element_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
@@ -1221,6 +1361,9 @@ def read_workbook(file_like: io.BytesIO):
     summary_raw = pd.read_excel(xls, sheet_name="SUMMARY", engine="openpyxl", header=None)
     summary_df = _normalize_summary_sheet(summary_raw, selected_contractor)
     dataframes["Level2"] = summary_df
+    summary_tenderer_totals = _extract_summary_tenderer_totals(summary_raw)
+    if "ProjectInformation" in dataframes:
+        dataframes["ProjectInformation"].attrs["summary_tenderer_totals"] = pd.DataFrame(summary_tenderer_totals)
 
     return dataframes
 
@@ -1445,6 +1588,79 @@ def stage_project_information(load_batch_id: str, source_file: str, df: pd.DataF
         conn.close()
 
 
+def stage_project_tenderers(load_batch_id: str, source_file: str, df: pd.DataFrame):
+    rows = []
+    selected_contractor = (get_selected_contractor(df) or "").strip()
+    selected_norm = selected_contractor.casefold()
+    tenderers = _extract_tenderers_from_project_information_df(df)
+    summary_totals = df.attrs.get("summary_tenderer_totals")
+    summary_totals_by_label: dict[str, dict[str, Decimal | None]] = {}
+    if isinstance(summary_totals, pd.DataFrame) and not summary_totals.empty:
+        for _, row in summary_totals.iterrows():
+            label = str(clean_value(row.get("TendererLabel")) or "").strip()
+            if not label:
+                continue
+            summary_totals_by_label[label.casefold()] = {
+                "FinalAdjustedTenderSum": to_decimal(row.get("FinalAdjustedTenderSum")),
+                "VarianceToCostplan": to_decimal(row.get("VarianceToCostplan")),
+                "ConstructionBudget": to_decimal(row.get("ConstructionBudget")),
+            }
+
+    table_columns = {
+        str(r.get("COLUMN_NAME"))
+        for r in fetch_all(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'stg'
+              AND TABLE_NAME = 'ProjectTenderer'
+            """
+        )
+    }
+    decimal_meta = _get_decimal_metadata(STAGING_TABLES["ProjectTenderer"])
+    tenderer_decimal_cols = ("FinalAdjustedTenderSum", "VarianceToCostplan", "ConstructionBudget")
+
+    for idx, (label, name) in enumerate(tenderers, start=1):
+        mapped = {
+            "LoadBatchID": load_batch_id,
+            "RowNum": idx,
+            "SourceFileName": source_file,
+            "TendererLabel": label,
+            "TendererName": name,
+            "IsSelected": 1 if selected_norm and name.casefold() == selected_norm else 0,
+        }
+        totals = summary_totals_by_label.get(name.casefold()) or summary_totals_by_label.get(label.casefold())
+        if totals:
+            if "FinalAdjustedTenderSum" in table_columns:
+                mapped["FinalAdjustedTenderSum"] = totals.get("FinalAdjustedTenderSum")
+            if "VarianceToCostplan" in table_columns:
+                mapped["VarianceToCostplan"] = totals.get("VarianceToCostplan")
+            if "ConstructionBudget" in table_columns:
+                mapped["ConstructionBudget"] = totals.get("ConstructionBudget")
+
+        for dec_col in tenderer_decimal_cols:
+            if dec_col not in mapped:
+                continue
+            dec_val = mapped.get(dec_col)
+            if dec_val is None or not isinstance(dec_val, Decimal):
+                continue
+            if dec_col not in decimal_meta:
+                continue
+            precision, scale = decimal_meta[dec_col]
+            coerced = _coerce_decimal_to_precision_scale(dec_val, precision, scale)
+            mapped[dec_col] = coerced
+        rows.append(mapped)
+
+    if not rows:
+        return
+
+    conn = get_connection()
+    try:
+        insert_dataframe_rows(conn, STAGING_TABLES["ProjectTenderer"], rows)
+    finally:
+        conn.close()
+
+
 def stage_project_quants(load_batch_id: str, source_file: str, df: pd.DataFrame):
     rows = []
 
@@ -1660,6 +1876,7 @@ def stage_cost_adjustments(load_batch_id: str, source_file: str, df: pd.DataFram
 
 def stage_all_sheets(load_batch_id: str, source_file: str, dataframes: dict):
     stage_project_information(load_batch_id, source_file, dataframes["ProjectInformation"])
+    stage_project_tenderers(load_batch_id, source_file, dataframes["ProjectInformation"])
     stage_project_quants(load_batch_id, source_file, dataframes["ProjectQuants"])
     stage_element_quants_l2(load_batch_id, source_file, dataframes["ElementQuants_L2"])
     stage_level2(load_batch_id, source_file, dataframes["Level2"])

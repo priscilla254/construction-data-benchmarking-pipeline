@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes.health import router as health_router
 from .api.routes.ingestion import router as ingestion_router
+from .api.routes.superset import router as superset_router
 from .core.settings import settings
 
 app = FastAPI(
@@ -21,3 +22,4 @@ app.add_middleware(
 
 app.include_router(health_router, prefix=settings.api_prefix)
 app.include_router(ingestion_router, prefix=settings.api_prefix)
+app.include_router(superset_router, prefix=settings.api_prefix)

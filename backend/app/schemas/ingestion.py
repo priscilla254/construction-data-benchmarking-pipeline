@@ -55,6 +55,7 @@ class AIQueryResponse(BaseModel):
     question: str
     generated_sql: str
     row_count: int
+    answer_text: str
     rows: list[dict[str, Any]]
 
 

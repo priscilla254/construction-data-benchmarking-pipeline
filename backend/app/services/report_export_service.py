@@ -18,7 +18,16 @@ EXPORTS_DIR = REPORTING_DIR / "exports"
 ASSETS_DIR = REPORTING_DIR / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
 LOGOS_DIR = ASSETS_DIR / "logos"
-DEFAULT_LOGO_PATH = LOGOS_DIR / "company_logo.png"
+# Prefer the CPG asset; fall back to legacy filename if present.
+_LOGO_CANDIDATES = ("CPG_1colBlueR_d.png", "company_logo.png")
+
+
+def _report_logo_path() -> Path | None:
+    for name in _LOGO_CANDIDATES:
+        candidate = LOGOS_DIR / name
+        if candidate.exists():
+            return candidate
+    return None
 DEFAULT_FONT_FAMILY = "Archivo"
 DEFAULT_FONT_BODY_FILE = "Archivo_Expanded-Light.ttf"
 DEFAULT_FONT_HEADING_FILE = "Archivo_Expanded-Bold.ttf"
@@ -45,6 +54,28 @@ def _to_docx_text(value: Any) -> str:
     text = re.sub(r"\r\n?", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _apply_docx_header_logo(docx_path: Path, logo_path: Path) -> None:
+    """Right-align the brand logo in the primary header so it appears on every page."""
+    if not logo_path.exists():
+        return
+    try:
+        from docx import Document as DocxDocument
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Mm
+    except ImportError:
+        return
+    doc = DocxDocument(str(docx_path))
+    for section in doc.sections:
+        header = section.header
+        p = header.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p.add_run().add_picture(str(logo_path), width=Mm(42))
+        body = header._element
+        body.remove(p._element)
+        body.insert(0, p._element)
+    doc.save(str(docx_path))
 
 
 def _prepare_docx_context(payload: dict[str, Any]) -> dict[str, Any]:
@@ -125,11 +156,15 @@ def _prepare_docx_context(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _build_pdf_html(payload: dict[str, Any]) -> str:
     context = _prepare_docx_context(payload)
-    logo_html = (
-        '<img class="brand-logo" src="assets/logos/company_logo.png" alt="Company logo" />'
-        if DEFAULT_LOGO_PATH.exists()
-        else ""
-    )
+    logo_path = _report_logo_path()
+    logo_html = ""
+    if logo_path is not None:
+        rel = f"assets/logos/{logo_path.name}"
+        logo_html = (
+            f'<div class="pdf-header-logo" aria-hidden="true">'
+            f'<img class="brand-logo" src="{rel}" alt="" />'
+            f"</div>"
+        )
     font_face_css = (
         f"""
     @font-face {{
@@ -183,7 +218,7 @@ def _build_pdf_html(payload: dict[str, Any]) -> str:
     {font_face_css}
     @page {{
       size: A4;
-      margin: 20mm 12mm 36mm 12mm;
+      margin: 28mm 12mm 36mm 12mm;
     }}
     body {{
       font-family: "{DEFAULT_FONT_FAMILY}", Arial, sans-serif;
@@ -192,7 +227,21 @@ def _build_pdf_html(payload: dict[str, Any]) -> str:
       font-size: 10px;
       margin: 0;
     }}
-    .brand-logo {{ max-height: 52px; margin-bottom: 14px; }}
+    .pdf-header-logo {{
+      position: fixed;
+      top: 8mm;
+      right: 12mm;
+      left: auto;
+      text-align: right;
+      z-index: 1000;
+      pointer-events: none;
+    }}
+    .pdf-header-logo .brand-logo {{
+      display: block;
+      max-height: 16mm;
+      width: auto;
+      margin: 0;
+    }}
     h1 {{ margin-bottom: 8px; color: #425667; font-weight: 700; font-size: 18px; }}
     h2 {{ margin-bottom: 8px; color: #32c3e2; font-weight: 700; font-size: 12px; }}
     h3 {{ margin-bottom: 8px; color: #425667; font-weight: 700; font-size: 11px; }}
@@ -343,6 +392,9 @@ def export_report_docx(payload: dict[str, Any]) -> Path:
     doc = DocxTemplate(str(TEMPLATE_PATH))
     doc.render(context)
     doc.save(str(output_path))
+    logo_path = _report_logo_path()
+    if logo_path is not None:
+        _apply_docx_header_logo(output_path, logo_path)
     return output_path
 
 

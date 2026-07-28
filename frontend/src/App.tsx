@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { embedDashboard } from "@superset-ui/embedded-sdk";
 import { Editor } from "@tinymce/tinymce-react";
 import "tinymce/tinymce";
 import "tinymce/icons/default";
@@ -19,6 +20,7 @@ import {
   getBatchErrorRows,
   getBatchSummary,
   getErrorDownloadUrl,
+  getSupersetGuestToken,
   runAIQuery,
   saveAIReportDraft,
   uploadWorkbookWithProgress,
@@ -90,15 +92,7 @@ function getStatusClass(status?: string | null) {
   return "status-badge status-neutral";
 }
 
-const AI_PRESET_QUESTIONS = [
-  "Show top 10 Level2 elements by total cost.",
-  "What is the average TotalCost by L1Name?",
-  "Show TotalCost by SectorName for committed batches.",
-  "Which Level2 elements have the highest average Rate?",
-  "List validation error counts by ErrorType and Severity.",
-];
-
-type PageId = "ingestion" | "ai-report" | "ai-qs";
+type PageId = "ingestion" | "ai-report" | "ai-qs" | "analytics";
 type EditableDraftSections = {
   executiveSummaryBody: string;
   executiveSummaryRecommendation: string;
@@ -137,6 +131,7 @@ function App() {
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiResult, setAiResult] = useState<AIQueryResponse | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [showRawAiData, setShowRawAiData] = useState(false);
   const [reportProjectNumber, setReportProjectNumber] = useState("");
   const [reportDraft, setReportDraft] = useState<AIReportDraftResponse | null>(null);
   const [reportDraftError, setReportDraftError] = useState<string | null>(null);
@@ -144,10 +139,22 @@ function App() {
     null,
   );
   const [reportDraftSavedAt, setReportDraftSavedAt] = useState<string | null>(null);
+  const [supersetDashboardId, setSupersetDashboardId] = useState("");
+  const [supersetError, setSupersetError] = useState<string | null>(null);
+  const [isEmbeddingSuperset, setIsEmbeddingSuperset] = useState(false);
   const [sectionEditState, setSectionEditState] = useState<SectionEditState>({
     executiveSummary: false,
     commercialAnalysis: false,
   });
+  const supersetMountRef = useRef<HTMLDivElement | null>(null);
+  const lastEmbeddedDashboardIdRef = useRef<string | null>(null);
+  const autoLoadAttemptedDashboardIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (activePage !== "analytics" && supersetMountRef.current) {
+      supersetMountRef.current.innerHTML = "";
+    }
+  }, [activePage]);
 
   const activeBatchId = useMemo(() => uploadResult?.load_batch_id || "", [uploadResult]);
   const currentStatus = summary?.BatchStatus ?? uploadResult?.status ?? "Not started";
@@ -198,6 +205,7 @@ function App() {
     setBusyAction("ai-query");
     setAiError(null);
     setAiResult(null);
+    setShowRawAiData(false);
     try {
       const result = await runAIQuery(aiQuestion.trim());
       setAiResult(result);
@@ -346,8 +354,58 @@ function App() {
     }
   }
 
+  const handleEmbedSupersetDashboard = useCallback(async () => {
+    if (!supersetMountRef.current) {
+      setSupersetError("Superset mount container is not ready.");
+      return;
+    }
+
+    setIsEmbeddingSuperset(true);
+    setSupersetError(null);
+    supersetMountRef.current.innerHTML = "";
+    try {
+      const tokenPayload = await getSupersetGuestToken(supersetDashboardId.trim() || undefined);
+      await embedDashboard({
+        id: tokenPayload.dashboard_id,
+        supersetDomain: tokenPayload.superset_url,
+        mountPoint: supersetMountRef.current,
+        fetchGuestToken: async () => tokenPayload.guest_token,
+        dashboardUiConfig: {
+          hideTitle: false,
+          hideChartControls: false,
+          hideTab: false,
+        },
+      });
+      setSupersetDashboardId(tokenPayload.dashboard_id);
+      lastEmbeddedDashboardIdRef.current = tokenPayload.dashboard_id;
+    } catch (error) {
+      setSupersetError(error instanceof Error ? error.message : "Failed to embed dashboard.");
+    } finally {
+      setIsEmbeddingSuperset(false);
+    }
+  }, [supersetDashboardId]);
+
+  useEffect(() => {
+    if (activePage !== "analytics") {
+      return;
+    }
+    const dashboardId = supersetDashboardId.trim();
+    if (isEmbeddingSuperset || !supersetMountRef.current) {
+      return;
+    }
+    const autoLoadKey = dashboardId || "__default__";
+    if (lastEmbeddedDashboardIdRef.current === dashboardId && dashboardId) {
+      return;
+    }
+    if (autoLoadAttemptedDashboardIdRef.current === autoLoadKey) {
+      return;
+    }
+    autoLoadAttemptedDashboardIdRef.current = autoLoadKey;
+    void handleEmbedSupersetDashboard();
+  }, [activePage, handleEmbedSupersetDashboard, isEmbeddingSuperset, supersetDashboardId]);
+
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${activePage === "analytics" ? "app-shell-analytics" : ""}`}>
       <div className="top-nav">
         <button
           type="button"
@@ -362,6 +420,13 @@ function App() {
           onClick={() => setActivePage("ai-qs")}
         >
           AI QS Assistant
+        </button>
+        <button
+          type="button"
+          className={`tab-button ${activePage === "analytics" ? "tab-button-active" : ""}`}
+          onClick={() => setActivePage("analytics")}
+        >
+          Analytics
         </button>
         <button
           type="button"
@@ -749,7 +814,7 @@ function App() {
                                 )
                               }
                               init={{
-                                license_key: "gpl",
+                                licenseKey: "gpl",
                                 height: 220,
                                 menubar: false,
                                 branding: false,
@@ -779,7 +844,7 @@ function App() {
                                 )
                               }
                               init={{
-                                license_key: "gpl",
+                                licenseKey: "gpl",
                                 height: 180,
                                 menubar: false,
                                 branding: false,
@@ -830,7 +895,7 @@ function App() {
                                 )
                               }
                               init={{
-                                license_key: "gpl",
+                                licenseKey: "gpl",
                                 height: 240,
                                 menubar: false,
                                 branding: false,
@@ -864,6 +929,24 @@ function App() {
             </section>
           </section>
         </>
+      ) : activePage === "analytics" ? (
+        <>
+          <section className="section-grid">
+            <section className="section-card span-12">
+              <div className="action-row">
+                <button
+                  className="button-secondary"
+                  onClick={() => void handleEmbedSupersetDashboard()}
+                  disabled={isEmbeddingSuperset}
+                >
+                  {isEmbeddingSuperset ? "Refreshing..." : "Refresh dashboard"}
+                </button>
+              </div>
+              {supersetError ? <div className="message-error">{supersetError}</div> : null}
+              <div ref={supersetMountRef} className="superset-mount" />
+            </section>
+          </section>
+        </>
       ) : (
         <>
           <section className="hero">
@@ -893,35 +976,24 @@ function App() {
                 <label className="field-label" htmlFor="ai-question">
                   Question
                 </label>
-                <textarea
-                  id="ai-question"
-                  className="text-input ai-textarea"
-                  placeholder="e.g. Show top 10 Level2 elements by total cost"
-                  value={aiQuestion}
-                  onChange={(event) => setAiQuestion(event.target.value)}
-                />
-                <div className="preset-row">
-                  {AI_PRESET_QUESTIONS.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      className="button-secondary preset-button"
-                      onClick={() => setAiQuestion(preset)}
-                    >
-                      {preset}
-                    </button>
-                  ))}
+                <div className="ai-question-compose">
+                  <textarea
+                    id="ai-question"
+                    className="text-input ai-textarea ai-textarea-compose"
+                    placeholder="e.g. Show top 10 Level2 elements by total cost"
+                    value={aiQuestion}
+                    onChange={(event) => setAiQuestion(event.target.value)}
+                  />
+                  <button
+                    className="ai-submit-button ai-submit-button-inline"
+                    onClick={() => void handleRunAIQuery()}
+                    disabled={busyAction === "ai-query"}
+                    aria-label={busyAction === "ai-query" ? "Running query" : "Submit query"}
+                    title={busyAction === "ai-query" ? "Running..." : "Submit query"}
+                  >
+                    {busyAction === "ai-query" ? "…" : "↑"}
+                  </button>
                 </div>
-              </div>
-
-              <div className="action-row">
-                <button
-                  className="button"
-                  onClick={() => void handleRunAIQuery()}
-                  disabled={busyAction === "ai-query"}
-                >
-                  {busyAction === "ai-query" ? "Running..." : "Run AI query"}
-                </button>
               </div>
 
               {aiError ? <div className="message-error">{aiError}</div> : null}
@@ -939,37 +1011,54 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="summary-item" style={{ marginTop: "12px" }}>
+                    <span className="summary-item-label">AI answer</span>
+                    <span className="summary-item-value">{aiResult.answer_text}</span>
+                  </div>
+
                   <details className="row-data-details" style={{ marginTop: "12px" }}>
                     <summary>Generated SQL</summary>
                     <pre className="row-data-pre">{aiResult.generated_sql}</pre>
                   </details>
 
-                  {aiResult.rows.length > 0 ? (
-                    <div className="table-wrap" style={{ marginTop: "12px" }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            {Object.keys(aiResult.rows[0]).map((col) => (
-                              <th key={col}>{col}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {aiResult.rows.map((row, idx) => (
-                            <tr key={idx}>
+                  <div className="action-row" style={{ marginTop: "12px" }}>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => setShowRawAiData((prev) => !prev)}
+                    >
+                      {showRawAiData ? "Hide raw data" : "Show raw data"}
+                    </button>
+                  </div>
+
+                  {showRawAiData ? (
+                    aiResult.rows.length > 0 ? (
+                      <div className="table-wrap" style={{ marginTop: "12px" }}>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
                               {Object.keys(aiResult.rows[0]).map((col) => (
-                                <td key={`${idx}-${col}`}>{String(row[col] ?? "")}</td>
+                                <th key={col}>{col}</th>
                               ))}
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="message-muted" style={{ marginTop: "12px" }}>
-                      Query ran successfully but returned no rows.
-                    </p>
-                  )}
+                          </thead>
+                          <tbody>
+                            {aiResult.rows.map((row, idx) => (
+                              <tr key={idx}>
+                                {Object.keys(aiResult.rows[0]).map((col) => (
+                                  <td key={`${idx}-${col}`}>{String(row[col] ?? "")}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="message-muted" style={{ marginTop: "12px" }}>
+                        Query ran successfully but returned no rows.
+                      </p>
+                    )
+                  ) : null}
                 </>
               ) : null}
             </section>

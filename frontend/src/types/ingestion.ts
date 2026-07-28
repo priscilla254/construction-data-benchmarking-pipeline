@@ -39,6 +39,7 @@ export type AIQueryResponse = {
   question: string;
   generated_sql: string;
   row_count: number;
+  answer_text: string;
   rows: Record<string, unknown>[];
 };
 
@@ -58,4 +59,10 @@ export type AIReportDraftSaveResponse = {
   source_file_name?: string | null;
   draft_sections: Record<string, unknown>;
   saved_at_utc: string;
+};
+
+export type SupersetGuestTokenResponse = {
+  superset_url: string;
+  dashboard_id: string;
+  guest_token: string;
 };

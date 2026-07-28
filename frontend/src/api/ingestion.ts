@@ -4,6 +4,7 @@ import type {
   AIQueryResponse,
   BatchSummary,
   IngestionRunResponse,
+  SupersetGuestTokenResponse,
   ValidationErrorCount,
   ValidationErrorDetail,
   ValidationErrorRow,
@@ -197,4 +198,18 @@ export async function exportAIReportPdf(payload: {
   report_context: Record<string, unknown>;
 }): Promise<void> {
   await exportAIReport("/api/ai/report-export/pdf", payload);
+}
+
+export async function getSupersetGuestToken(
+  dashboardId?: string,
+): Promise<SupersetGuestTokenResponse> {
+  const body = dashboardId?.trim()
+    ? { dashboard_id: dashboardId.trim() }
+    : {};
+  const response = await fetch("/api/superset/guest-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJsonResponse<SupersetGuestTokenResponse>(response);
 }

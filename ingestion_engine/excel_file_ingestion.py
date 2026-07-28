@@ -120,7 +120,7 @@ COLUMN_MAPS = {
 # Required Excel columns per sheet (minimum contract)
 REQUIRED_COLUMNS = {
     "ProjectInformation": ["ProjectID", "ProjectName", "LocationLabel", "SectorCode", "CostStage", "SelectedContractor"],
-    "ProjectQuants": ["Name", "Qty", "Unit"],
+    "ProjectQuants": ["ProjectQuantName", "Qty", "Unit"],
     "ElementQuants_L2": ["L2Code", "QuantTypeCode", "Qty"],
     "Level2": ["L2Code", "L2Name", "TotalCost"],
     "LineItem_L3": ["L2Code", "ItemDescription", "RowType"],
@@ -1256,6 +1256,50 @@ def _normalize_element_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _normalize_project_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    rename_map = {}
+    for col in out.columns:
+        n = normalize_text(col)
+        if n in {"projectquantcode", "code"}:
+            rename_map[col] = "ProjectQuantCode"
+        elif n in {"projectquantname", "name", "projectquant"}:
+            rename_map[col] = "ProjectQuantName"
+        elif n in {"qty", "quantity", "quant"}:
+            rename_map[col] = "Qty"
+        elif n in {"unit", "uom"}:
+            rename_map[col] = "Unit"
+        elif n in {"comment", "comments", "note", "notes"}:
+            rename_map[col] = "Comment"
+    out = out.rename(columns=rename_map)
+    return out
+
+
+def _extract_gifa_from_project_quants(df: pd.DataFrame) -> Decimal | None:
+    if df is None or df.empty:
+        return None
+
+    name_col = None
+    for candidate in ("ProjectQuantName", "Name"):
+        if candidate in df.columns:
+            name_col = candidate
+            break
+    if name_col is None or "Qty" not in df.columns:
+        return None
+
+    for _, row in df.iterrows():
+        label = normalize_text(row.get(name_col))
+        if not label:
+            continue
+        if label in {"gifa", "grossinternalfloorarea", "grossinternalarea"} or "gifa" in label:
+            qty = to_decimal(row.get("Qty"))
+            if qty is not None:
+                return qty
+    return None
+
+
 def _normalize_adjustments_sheet(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -1316,6 +1360,8 @@ def read_workbook(file_like: io.BytesIO):
         df.columns = [str(c).strip() for c in df.columns]
         if sheet == "ProjectInformation":
             df = _normalize_project_information_sheet(df)
+        elif sheet == "ProjectQuants":
+            df = _normalize_project_quants_sheet(df)
         elif sheet == "ElementQuants_L2":
             df = _normalize_element_quants_sheet(df)
         elif sheet == "Adjustments":
@@ -1488,9 +1534,20 @@ def insert_dataframe_rows(conn, table_name: str, rows: list[dict]):
         values.append(tuple(row.get(col) for col in columns))
 
     cur = conn.cursor()
-    cur.fast_executemany = True
-    cur.executemany(sql, values)
-    conn.commit()
+    try:
+        cur.fast_executemany = True
+        cur.executemany(sql, values)
+        conn.commit()
+    except pyodbc.Error as exc:
+        # Some SQL Server ODBC combinations can throw HY090 with fast_executemany
+        # when string buffers vary significantly row-to-row. Retry safely.
+        msg = str(exc)
+        if "HY090" not in msg:
+            raise
+        cur = conn.cursor()
+        cur.fast_executemany = False
+        cur.executemany(sql, values)
+        conn.commit()
 
 
 def _get_decimal_metadata(table_full_name: str) -> dict[str, tuple[int, int]]:
@@ -1549,7 +1606,12 @@ def _coerce_decimal_to_precision_scale(
     return None
 
 
-def stage_project_information(load_batch_id: str, source_file: str, df: pd.DataFrame):
+def stage_project_information(
+    load_batch_id: str,
+    source_file: str,
+    df: pd.DataFrame,
+    fallback_gifa: Decimal | None = None,
+):
     rows = []
 
     for idx, row in df.iterrows():
@@ -1563,6 +1625,13 @@ def stage_project_information(load_batch_id: str, source_file: str, df: pd.DataF
 
         for excel_col, db_col in COLUMN_MAPS["ProjectInformation"].items():
             mapped[db_col] = clean_value(row.get(excel_col))
+
+        # For location-dimension joins, prefer workbook Region when provided.
+        # This keeps site-level labels (e.g. street/project names) from failing
+        # against region-based DimLocation members.
+        region_value = clean_value(row.get("Region"))
+        if region_value is not None:
+            mapped["LocationLabel"] = region_value
 
         # Workbook commonly carries SectorName; resolve to canonical SectorCode.
         mapped["SectorCode"] = resolve_sector_code(mapped.get("SectorCode"))
@@ -1578,6 +1647,8 @@ def stage_project_information(load_batch_id: str, source_file: str, df: pd.DataF
         mapped["Contamination"] = to_bit(row.get("Contamination"))
         mapped["ProgrammeLengthInWeeks"] = to_int(row.get("ProgrammeLengthInWeeks"))
         mapped["GIFA"] = to_decimal(row.get("GIFA"))
+        if mapped["GIFA"] is None and fallback_gifa is not None:
+            mapped["GIFA"] = fallback_gifa
 
         rows.append(mapped)
 
@@ -1875,7 +1946,13 @@ def stage_cost_adjustments(load_batch_id: str, source_file: str, df: pd.DataFram
 
 
 def stage_all_sheets(load_batch_id: str, source_file: str, dataframes: dict):
-    stage_project_information(load_batch_id, source_file, dataframes["ProjectInformation"])
+    fallback_gifa = _extract_gifa_from_project_quants(dataframes.get("ProjectQuants"))
+    stage_project_information(
+        load_batch_id,
+        source_file,
+        dataframes["ProjectInformation"],
+        fallback_gifa=fallback_gifa,
+    )
     stage_project_tenderers(load_batch_id, source_file, dataframes["ProjectInformation"])
     stage_project_quants(load_batch_id, source_file, dataframes["ProjectQuants"])
     stage_element_quants_l2(load_batch_id, source_file, dataframes["ElementQuants_L2"])

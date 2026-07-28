@@ -1,5 +1,6 @@
 import os
 import re
+import json
 
 import pandas as pd
 from fastapi import HTTPException
@@ -124,6 +125,57 @@ def _remove_technical_key_columns(rows: list[dict]) -> list[dict]:
         # If filtering removes every field, keep the original row to avoid empty objects.
         filtered_rows.append(filtered if filtered else row)
     return filtered_rows
+
+
+def _fallback_narrative_answer(question: str, rows: list[dict]) -> str:
+    if not rows:
+        return "I could not find any matching records for that question."
+    first_row = rows[0]
+    if not isinstance(first_row, dict) or not first_row:
+        return f"I found {len(rows)} matching record(s) for your question."
+    preview_pairs: list[str] = []
+    for key, value in list(first_row.items())[:3]:
+        preview_pairs.append(f"{key}={value}")
+    preview_text = ", ".join(preview_pairs)
+    return (
+        f"I found {len(rows)} matching record(s) for your question: '{question}'. "
+        f"The top result includes {preview_text}."
+    )
+
+
+def _generate_narrative_answer(question: str, rows: list[dict], row_count: int) -> str:
+    fallback = _fallback_narrative_answer(question, rows)
+    try:
+        client = _get_groq_client()
+    except Exception:
+        return fallback
+
+    sample_rows = rows[:20]
+    prompt = (
+        "Write a concise, client-friendly answer in plain English based ONLY on the SQL result data.\n"
+        "Rules:\n"
+        "1. Use only facts present in the provided result rows.\n"
+        "2. Do not invent values, assumptions, or extra metrics.\n"
+        "3. If row_count is 0, state that no matching data was found.\n"
+        "4. Keep to 2-4 sentences.\n"
+        "5. Do not mention SQL, database internals, or technical implementation.\n\n"
+        f"Question:\n{question}\n\n"
+        f"row_count: {row_count}\n"
+        f"result_rows_sample:\n{json.dumps(sample_rows, ensure_ascii=True)}\n"
+    )
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a helpful quantity surveying analytics assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        content = (completion.choices[0].message.content or "").strip()
+        return content or fallback
+    except Exception:
+        return fallback
 
 
 def generate_sql_from_question(question: str) -> str:
@@ -284,10 +336,12 @@ def run_ai_query(question: str) -> dict:
         try:
             df = pd.read_sql_query(current_sql, conn)
             rows = _remove_technical_key_columns(df.to_dict(orient="records"))
+            answer_text = _generate_narrative_answer(question=question, rows=rows, row_count=len(rows))
             return {
                 "question": question,
                 "generated_sql": current_sql,
                 "row_count": len(rows),
+                "answer_text": answer_text,
                 "rows": rows,
             }
         except Exception as first_exc:
@@ -301,10 +355,14 @@ def run_ai_query(question: str) -> dict:
                 try:
                     df = pd.read_sql_query(repaired_sql, conn)
                     rows = _remove_technical_key_columns(df.to_dict(orient="records"))
+                    answer_text = _generate_narrative_answer(
+                        question=question, rows=rows, row_count=len(rows)
+                    )
                     return {
                         "question": question,
                         "generated_sql": repaired_sql,
                         "row_count": len(rows),
+                        "answer_text": answer_text,
                         "rows": rows,
                     }
                 except Exception as repair_exc:

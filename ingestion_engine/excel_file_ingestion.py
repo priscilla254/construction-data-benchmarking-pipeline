@@ -34,7 +34,7 @@ SQL_CONNECTION_STRING = (
 )
 
 
-# Expected workbook base sheets (names must match exactly)
+# Expected workbook base sheets (canonical names used downstream)
 REQUIRED_BASE_SHEETS = [
     "ProjectInformation",
     "ProjectQuants",
@@ -43,6 +43,47 @@ REQUIRED_BASE_SHEETS = [
 ]
 if PROCESS_ADJUSTMENTS:
     REQUIRED_BASE_SHEETS.append("Adjustments") # Adjustments sheet is optional, so only add if PROCESS_ADJUSTMENTS is True
+
+# Alternate Excel tab names that map to canonical sheet names.
+# First matching name present in the workbook wins (left to right).
+SHEET_ALIASES = {
+    "ProjectQuants": ["ProjectQuants", "Project Information - 2"],
+    "ElementQuants_L2": ["ElementQuants_L2", "Project Information - 3"],
+}
+
+
+def _workbook_sheet_lookup(sheet_names) -> dict[str, str]:
+    """Map normalized sheet title -> actual Excel sheet name."""
+    lookup: dict[str, str] = {}
+    for name in sheet_names:
+        actual = str(name)
+        decoded = _unescape_html_text(actual).strip()
+        for key in {actual, decoded, actual.strip(), decoded.casefold(), actual.strip().casefold()}:
+            if key and key not in lookup:
+                lookup[key] = actual
+    return lookup
+
+
+def resolve_sheet_name(canonical_name: str, sheet_names) -> str | None:
+    """
+    Resolve a canonical sheet name to the actual workbook tab name.
+    Uses SHEET_ALIASES when provided; otherwise requires an exact match.
+    """
+    lookup = _workbook_sheet_lookup(sheet_names)
+    candidates = SHEET_ALIASES.get(canonical_name, [canonical_name])
+    for candidate in candidates:
+        for key in (candidate, candidate.strip(), candidate.casefold(), candidate.strip().casefold()):
+            if key in lookup:
+                return lookup[key]
+    return None
+
+
+def _all_base_sheet_names_and_aliases() -> set[str]:
+    names: set[str] = set(REQUIRED_BASE_SHEETS)
+    for canonical, aliases in SHEET_ALIASES.items():
+        names.add(canonical)
+        names.update(aliases)
+    return {n.strip().casefold() for n in names}
 
 # Column maps: Excel header -> staging column name
 COLUMN_MAPS = {
@@ -1331,21 +1372,41 @@ def _normalize_adjustments_sheet(df: pd.DataFrame) -> pd.DataFrame:
 def read_workbook(file_like: io.BytesIO):
     xls = pd.ExcelFile(file_like, engine="openpyxl")
 
-    missing_sheets = [s for s in REQUIRED_BASE_SHEETS if s not in xls.sheet_names]
+    resolved_sheets: dict[str, str] = {}
+    missing_sheets = []
+    for canonical in REQUIRED_BASE_SHEETS:
+        actual = resolve_sheet_name(canonical, xls.sheet_names)
+        if actual is None:
+            missing_sheets.append(canonical)
+        else:
+            resolved_sheets[canonical] = actual
     if missing_sheets:
-        raise ValueError(f"Missing required sheets: {missing_sheets}")
+        alias_hint = {
+            name: SHEET_ALIASES.get(name, [name])
+            for name in missing_sheets
+        }
+        raise ValueError(
+            f"Missing required sheets: {missing_sheets}. "
+            f"Accepted names by sheet: {alias_hint}"
+        )
 
     # Level 3 sheets use naming convention: "<L2Code> <L2Name>".
     # Use a stricter pattern so sheets like "Project Information" are not
     # misclassified as L3 (L2 code must contain at least one digit).
     l3_sheet_name_pattern = re.compile(r"^\s*([A-Za-z]*\d+(?:\.\d+)*)\s+(.+?)\s*$")
+    base_sheet_keys = _all_base_sheet_names_and_aliases()
+    resolved_actual_names = {v.strip().casefold() for v in resolved_sheets.values()}
     # Keep both actual sheet name (for pd.read_excel) and decoded text
     # (for pattern parsing / code-name extraction).
     l3_sheets: list[tuple[str, str]] = []
     for sheet in xls.sheet_names:
         actual_name = str(sheet)
         decoded_name = _unescape_html_text(sheet).strip()
-        if decoded_name in REQUIRED_BASE_SHEETS or actual_name in REQUIRED_BASE_SHEETS:
+        if (
+            actual_name.strip().casefold() in resolved_actual_names
+            or decoded_name.casefold() in base_sheet_keys
+            or actual_name.strip().casefold() in base_sheet_keys
+        ):
             continue
         if l3_sheet_name_pattern.match(decoded_name):
             l3_sheets.append((actual_name, decoded_name))
@@ -1356,7 +1417,8 @@ def read_workbook(file_like: io.BytesIO):
 
     dataframes = {}
     for sheet in REQUIRED_BASE_SHEETS:
-        df = pd.read_excel(xls, sheet_name=sheet, engine="openpyxl")
+        actual_sheet = resolved_sheets[sheet]
+        df = pd.read_excel(xls, sheet_name=actual_sheet, engine="openpyxl")
         df.columns = [str(c).strip() for c in df.columns]
         if sheet == "ProjectInformation":
             df = _normalize_project_information_sheet(df)
@@ -1404,7 +1466,8 @@ def read_workbook(file_like: io.BytesIO):
     )
 
     # Map SUMMARY -> Level2. SUMMARY can have a different tabular layout.
-    summary_raw = pd.read_excel(xls, sheet_name="SUMMARY", engine="openpyxl", header=None)
+    summary_actual = resolved_sheets["SUMMARY"]
+    summary_raw = pd.read_excel(xls, sheet_name=summary_actual, engine="openpyxl", header=None)
     summary_df = _normalize_summary_sheet(summary_raw, selected_contractor)
     dataframes["Level2"] = summary_df
     summary_tenderer_totals = _extract_summary_tenderer_totals(summary_raw)

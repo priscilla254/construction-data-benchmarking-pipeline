@@ -56,8 +56,17 @@ def _to_docx_text(value: Any) -> str:
     return text.strip()
 
 
+def _clear_header_images(header) -> None:
+    """Remove embedded images from a Word header so logos are never stacked."""
+    element = header._element
+    for node in element.xpath('.//*[local-name()="drawing" or local-name()="pict"]'):
+        parent = node.getparent()
+        if parent is not None:
+            parent.remove(node)
+
+
 def _apply_docx_header_logo(docx_path: Path, logo_path: Path) -> None:
-    """Right-align the brand logo in the primary header so it appears on every page."""
+    """Right-align a single brand logo in the primary header on every page."""
     if not logo_path.exists():
         return
     try:
@@ -69,6 +78,8 @@ def _apply_docx_header_logo(docx_path: Path, logo_path: Path) -> None:
     doc = DocxDocument(str(docx_path))
     for section in doc.sections:
         header = section.header
+        # Template may already contain one or more logos; clear them first.
+        _clear_header_images(header)
         p = header.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         p.add_run().add_picture(str(logo_path), width=Mm(42))

@@ -34,32 +34,6 @@ If PowerShell blocks activation, run:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-## Run The Backend
-
-Start the FastAPI app from the repository root:
-
-```powershell
-python -m uvicorn backend.app.main:app --reload --reload-dir backend --reload-dir ingestion_engine
-```
-
-Superset embed runtime expects these values in root `.env`:
-
-```env
-SUPERSET_URL=http://127.0.0.1:8088
-SUPERSET_API_USERNAME=admin
-SUPERSET_API_PASSWORD=your_password
-SUPERSET_DEFAULT_DASHBOARD_ID=94db7fc1-ef6a-4d80-bedf-44546a4f6d60
-```
-
-Open the API docs in your browser:
-
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/redoc`
-
-Health check:
-
-- `http://127.0.0.1:8000/api/health`
-
 ## Run The Frontend
 
 From the repository root:
@@ -76,8 +50,34 @@ Open in browser:
 
 Notes:
 
-- Keep the backend running on `http://127.0.0.1:8000` while using the frontend.
+- Keep the backend running on `http://127.0.0.1:8001` while using the frontend.
 - Vite is configured to proxy `/api` requests to the backend.
+
+## Run The Backend
+
+Start the FastAPI app from the repository root:
+
+```powershell
+python -m uvicorn backend.app.main:app --reload --reload-dir backend --reload-dir ingestion_engine --port 8001
+```
+
+Superset embed runtime expects these values in root `.env`:
+
+```env
+SUPERSET_URL=http://127.0.0.1:8088
+SUPERSET_API_USERNAME=admin
+SUPERSET_API_PASSWORD=your_password
+SUPERSET_DEFAULT_DASHBOARD_ID=94db7fc1-ef6a-4d80-bedf-44546a4f6d60
+```
+
+Open the API docs in your browser:
+
+- `http://127.0.0.1:8001/docs`
+- `http://127.0.0.1:8001/redoc`
+
+Health check:
+
+- `http://127.0.0.1:8001/api/health`
 
 ## AI SQL Assistant (GROQ)
 
@@ -210,7 +210,7 @@ Current backend endpoints:
 Recommended smoke-test flow:
 
 1. Start the backend server.
-2. Open `http://127.0.0.1:8000/docs`.
+2. Open `http://127.0.0.1:8001/docs`.
 3. Run `POST /api/ingestion/upload` with a test `.xlsx` file.
 4. Copy the returned `load_batch_id`.
 5. Use that `load_batch_id` in the batch endpoints.
@@ -218,7 +218,7 @@ Recommended smoke-test flow:
 Example PowerShell upload:
 
 ```powershell
-curl -X POST "http://127.0.0.1:8000/api/ingestion/upload" `
+curl -X POST "http://127.0.0.1:8001/api/ingestion/upload" `
   -H "accept: application/json" `
   -H "Content-Type: multipart/form-data" `
   -F "file=@C:/path/to/your/test.xlsx"
@@ -238,17 +238,17 @@ Expected upload response shape:
 Then query the batch:
 
 ```powershell
-curl "http://127.0.0.1:8000/api/batches/<load_batch_id>/summary"
-curl "http://127.0.0.1:8000/api/batches/<load_batch_id>/error-counts"
-curl "http://127.0.0.1:8000/api/batches/<load_batch_id>/error-details"
-curl "http://127.0.0.1:8000/api/batches/<load_batch_id>/error-rows"
-curl -OJ "http://127.0.0.1:8000/api/batches/<load_batch_id>/download-errors"
+curl "http://127.0.0.1:8001/api/batches/<load_batch_id>/summary"
+curl "http://127.0.0.1:8001/api/batches/<load_batch_id>/error-counts"
+curl "http://127.0.0.1:8001/api/batches/<load_batch_id>/error-details"
+curl "http://127.0.0.1:8001/api/batches/<load_batch_id>/error-rows"
+curl -OJ "http://127.0.0.1:8001/api/batches/<load_batch_id>/download-errors"
 ```
 
 AI query example:
 
 ```powershell
-curl -X POST "http://127.0.0.1:8000/api/ai/query" `
+curl -X POST "http://127.0.0.1:8001/api/ai/query" `
   -H "Content-Type: application/json" `
   -d "{\"question\":\"Show top 10 Level2 elements by total cost\"}"
 ```
@@ -256,7 +256,7 @@ curl -X POST "http://127.0.0.1:8000/api/ai/query" `
 AI report draft example:
 
 ```powershell
-curl -X POST "http://127.0.0.1:8000/api/ai/report-draft" `
+curl -X POST "http://127.0.0.1:8001/api/ai/report-draft" `
   -H "Content-Type: application/json" `
   -d "{\"project_id\":\"P2402\"}"
 ```

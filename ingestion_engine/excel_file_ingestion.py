@@ -47,6 +47,12 @@ if PROCESS_ADJUSTMENTS:
 # Alternate Excel tab names that map to canonical sheet names.
 # First matching name present in the workbook wins (left to right).
 SHEET_ALIASES = {
+    "ProjectInformation": [
+        "ProjectInformation",
+        "Project Information - 1",
+        "Project Information -1",
+        "Project Information",
+    ],
     "ProjectQuants": ["ProjectQuants", "Project Information - 2"],
     "ElementQuants_L2": ["ElementQuants_L2", "Project Information - 3"],
 }

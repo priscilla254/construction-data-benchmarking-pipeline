@@ -1276,21 +1276,62 @@ def _extract_tenderers_from_project_information_df(
 
 
 def _normalize_element_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize ElementQuants_L2, including template alias sheet
+    'Project Information - 3' with headers: Code, Element, Qty, Unit, Comments.
+    """
     if df is None or df.empty:
         return df
-    out = df.copy()
-    rename_map = {}
-    for col in out.columns:
-        n = normalize_text(col)
-        if n in {"elementalquants", "element", "name", "l2name"}:
-            rename_map[col] = "L2Name"
-        elif n in {"quant", "quantity", "qty"}:
-            rename_map[col] = "Qty"
-        elif n in {"quanttype", "quanttypecode"}:
-            rename_map[col] = "QuantTypeCode"
-    out = out.rename(columns=rename_map)
 
-    if "L2Code" not in out.columns and "L2Name" in out.columns:
+    def _rename_element_quant_columns(frame: pd.DataFrame) -> pd.DataFrame:
+        rename_map = {}
+        for col in frame.columns:
+            n = normalize_text(col)
+            # Critically: "Code" must map to L2Code so real codes (0.1, 1.1...) are kept.
+            if n in {"l2code", "code", "ref", "reference"}:
+                rename_map[col] = "L2Code"
+            elif n in {"elementalquants", "element", "name", "l2name"}:
+                rename_map[col] = "L2Name"
+            elif n in {"quant", "quantity", "qty"}:
+                rename_map[col] = "Qty"
+            elif n in {"unit", "uom"}:
+                rename_map[col] = "Unit"
+            elif n in {"comment", "comments", "note", "notes"}:
+                rename_map[col] = "Comment"
+            elif n in {"quanttype", "quanttypecode"}:
+                rename_map[col] = "QuantTypeCode"
+        return frame.rename(columns=rename_map)
+
+    out = _rename_element_quant_columns(df.copy())
+
+    # If headers sit below title/nav rows, column names won't match. Promote the
+    # first row that looks like Code / Element / Qty into the header.
+    if "L2Code" not in out.columns:
+        probe = df.copy()
+        probe.columns = [str(c).strip() for c in probe.columns]
+        header_idx = None
+        for i in range(min(15, len(probe))):
+            tokens = {normalize_text(v) for v in probe.iloc[i].tolist()}
+            has_code = "code" in tokens or "l2code" in tokens or "ref" in tokens
+            has_element = "element" in tokens or "l2name" in tokens or "name" in tokens
+            has_qty = "qty" in tokens or "quantity" in tokens or "quant" in tokens
+            if has_code and (has_element or has_qty):
+                header_idx = i
+                break
+        if header_idx is not None:
+            header_vals = [
+                str(clean_value(v)).strip() if clean_value(v) is not None else f"col_{idx}"
+                for idx, v in enumerate(probe.iloc[header_idx].tolist())
+            ]
+            body = probe.iloc[header_idx + 1 :].copy()
+            body.columns = header_vals
+            body = body.reset_index(drop=True)
+            out = _rename_element_quant_columns(body)
+
+    if "L2Code" in out.columns:
+        out["L2Code"] = out["L2Code"].map(_format_code_text)
+    elif "L2Name" in out.columns:
+        # Last resort only when no Code column exists at all.
         out["L2Code"] = [f"L2-{i+1:03d}" for i in range(len(out))]
     if "QuantTypeCode" not in out.columns:
         out["QuantTypeCode"] = "DEFAULT"
@@ -1298,15 +1339,19 @@ def _normalize_element_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_project_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalize ProjectQuants, including template alias sheet
+    'Project Information - 2' with headers: Name, Qty, Unit, Comments.
+    """
     if df is None or df.empty:
         return df
     out = df.copy()
     rename_map = {}
     for col in out.columns:
         n = normalize_text(col)
-        if n in {"projectquantcode", "code"}:
+        if n in {"projectquantcode", "code", "ref", "reference"}:
             rename_map[col] = "ProjectQuantCode"
-        elif n in {"projectquantname", "name", "projectquant"}:
+        elif n in {"projectquantname", "name", "names", "projectquant", "description"}:
             rename_map[col] = "ProjectQuantName"
         elif n in {"qty", "quantity", "quant"}:
             rename_map[col] = "Qty"
@@ -1315,6 +1360,9 @@ def _normalize_project_quants_sheet(df: pd.DataFrame) -> pd.DataFrame:
         elif n in {"comment", "comments", "note", "notes"}:
             rename_map[col] = "Comment"
     out = out.rename(columns=rename_map)
+
+    if "ProjectQuantCode" not in out.columns and "ProjectQuantName" in out.columns:
+        out["ProjectQuantCode"] = [f"PQ-{i+1:03d}" for i in range(len(out))]
     return out
 
 

@@ -91,6 +91,19 @@ def _all_base_sheet_names_and_aliases() -> set[str]:
         names.update(aliases)
     return {n.strip().casefold() for n in names}
 
+
+def _source_sheet_name(df: pd.DataFrame | None, fallback: str) -> str:
+    """Return the Excel tab name shown to users, falling back to the canonical name."""
+    if df is None:
+        return fallback
+    try:
+        actual = df.attrs.get("source_sheet_name")
+    except Exception:
+        actual = None
+    if actual:
+        return str(actual)
+    return fallback
+
 # Column maps: Excel header -> staging column name
 COLUMN_MAPS = {
     "ProjectInformation": {
@@ -1177,20 +1190,20 @@ def _extract_summary_tenderer_totals(raw_df: pd.DataFrame) -> list[dict[str, obj
     return results
 
 
-def _normalize_project_information_sheet(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-
-    if "ProjectID" in df.columns and "ProjectName" in df.columns:
-        return df
-
-    cols = list(df.columns)
-    if len(cols) < 2:
-        return df
-    key_col, val_col = cols[0], cols[1]
+def _canonical_project_info_field(key_text: str) -> list[str]:
+    """
+    Map a Project Information label to one or more canonical field names.
+    Template example: 'Contractor 1 (SELECTED CONTRACTOR) *' -> SelectedContractor + Contractor 1.
+    """
+    text = (key_text or "").strip()
+    if not text:
+        return []
 
     key_map = {
         "projectid": "ProjectID",
+        "projectnumber": "ProjectID",
+        "projectno": "ProjectID",
+        "projectref": "ProjectID",
         "projectname": "ProjectName",
         "clientname": "ClientName",
         "location": "LocationLabel",
@@ -1219,18 +1232,69 @@ def _normalize_project_information_sheet(df: pd.DataFrame) -> pd.DataFrame:
         "notes": "Notes",
     }
 
+    n = normalize_text(text)
+    fields: list[str] = []
+
+    exact = key_map.get(n)
+    if exact:
+        fields.append(exact)
+
+    # "Contractor 1 (SELECTED CONTRACTOR) *" / any label mentioning selected contractor.
+    if "selectedcontractor" in n and "SelectedContractor" not in fields:
+        fields.append("SelectedContractor")
+
+    contractor_match = re.match(r"^contractor\s*(\d+)\b", text, flags=re.IGNORECASE)
+    if contractor_match:
+        label = f"Contractor {int(contractor_match.group(1))}"
+        if label not in fields:
+            fields.append(label)
+
+    return fields
+
+
+def _normalize_project_information_sheet(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    # Wide layout: rename common template headers before the early return.
+    wide_rename = {}
+    for col in df.columns:
+        col_text = str(col).strip()
+        n = normalize_text(col_text)
+        if n in {"projectid", "projectnumber", "projectno", "projectref"}:
+            wide_rename[col] = "ProjectID"
+        elif "selectedcontractor" in n or n in {"contractorname", "selectedcontractor"}:
+            wide_rename[col] = "SelectedContractor"
+        else:
+            contractor_match = re.match(r"^contractor\s*(\d+)\b", col_text, flags=re.IGNORECASE)
+            if contractor_match and "selected" in col_text.casefold():
+                wide_rename[col] = "SelectedContractor"
+    if wide_rename:
+        df = df.rename(columns=wide_rename)
+
+    if "ProjectID" in df.columns and "ProjectName" in df.columns:
+        # Still ensure SelectedContractor exists when only a marked contractor column was present.
+        if "SelectedContractor" not in df.columns:
+            for col in list(df.columns):
+                col_text = str(col).strip()
+                if "selected" in col_text.casefold() and re.match(r"^contractor\s*\d+\b", col_text, flags=re.IGNORECASE):
+                    df = df.rename(columns={col: "SelectedContractor"})
+                    break
+        return df
+
+    cols = list(df.columns)
+    if len(cols) < 2:
+        return df
+    key_col, val_col = cols[0], cols[1]
+
     out: dict[str, object] = {}
-    contractor_label_pattern = re.compile(r"^contractor\s*\d+$", re.IGNORECASE)
     for _, row in df.iterrows():
         k = clean_value(row.get(key_col))
         v = clean_value(row.get(val_col))
         if k is None:
             continue
         key_text = str(k).strip()
-        canonical = key_map.get(normalize_text(key_text))
-        if canonical is None and contractor_label_pattern.match(key_text):
-            canonical = re.sub(r"\s+", " ", key_text.title())
-        if canonical:
+        for canonical in _canonical_project_info_field(key_text):
             # Keep first meaningful value; do not overwrite with null from later rows.
             if v is not None or canonical not in out:
                 out[canonical] = v
@@ -1255,18 +1319,20 @@ def _extract_tenderers_from_project_information_df(
 ) -> list[tuple[str, str]]:
     """
     Returns list of (TendererLabel, TendererName) from columns like Contractor 1..N.
+    Also accepts template labels such as 'Contractor 1 (SELECTED CONTRACTOR) *'.
     """
     if project_info_df is None or project_info_df.empty:
         return []
 
-    contractor_label_pattern = re.compile(r"^Contractor\s*\d+$", re.IGNORECASE)
+    contractor_label_pattern = re.compile(r"^Contractor\s*(\d+)\b", re.IGNORECASE)
     seen: set[str] = set()
     results: list[tuple[str, str]] = []
 
     for _, row in project_info_df.iterrows():
         for col in project_info_df.columns:
             col_name = str(col).strip()
-            if not contractor_label_pattern.match(col_name):
+            m = contractor_label_pattern.match(col_name)
+            if not m:
                 continue
             raw_val = clean_value(row.get(col))
             name = str(raw_val).strip() if raw_val is not None else ""
@@ -1276,7 +1342,7 @@ def _extract_tenderers_from_project_information_df(
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
-            label = re.sub(r"\s+", " ", col_name.title())
+            label = f"Contractor {int(m.group(1))}"
             results.append((label, name))
     return results
 
@@ -1482,6 +1548,8 @@ def read_workbook(file_like: io.BytesIO):
             df = _normalize_element_quants_sheet(df)
         elif sheet == "Adjustments":
             df = _normalize_adjustments_sheet(df)
+        if isinstance(df, pd.DataFrame):
+            df.attrs["source_sheet_name"] = actual_sheet
         dataframes[sheet] = df
 
     selected_contractor = get_selected_contractor(dataframes.get("ProjectInformation"))
@@ -1518,59 +1586,76 @@ def read_workbook(file_like: io.BytesIO):
     dataframes["LineItem_L3"] = (
         pd.concat(l3_frames, ignore_index=True) if l3_frames else pd.DataFrame()
     )
+    dataframes["LineItem_L3"].attrs["source_sheet_name"] = "Level 3 sheets"
 
     # Map SUMMARY -> Level2. SUMMARY can have a different tabular layout.
     summary_actual = resolved_sheets["SUMMARY"]
     summary_raw = pd.read_excel(xls, sheet_name=summary_actual, engine="openpyxl", header=None)
     summary_df = _normalize_summary_sheet(summary_raw, selected_contractor)
+    summary_df.attrs["source_sheet_name"] = summary_actual
     dataframes["Level2"] = summary_df
     summary_tenderer_totals = _extract_summary_tenderer_totals(summary_raw)
     if "ProjectInformation" in dataframes:
         dataframes["ProjectInformation"].attrs["summary_tenderer_totals"] = pd.DataFrame(summary_tenderer_totals)
 
+    # Keep the canonical->actual map for validation/error messaging.
+    dataframes["_resolved_sheets"] = resolved_sheets
     return dataframes
 
 
-def validate_sheet_columns(load_batch_id: str, sheet_name: str, df: pd.DataFrame):
+def validate_sheet_columns(
+    load_batch_id: str,
+    sheet_name: str,
+    df: pd.DataFrame,
+    display_sheet_name: str | None = None,
+):
+    shown_sheet = display_sheet_name or _source_sheet_name(df, sheet_name)
     for col in REQUIRED_COLUMNS[sheet_name]:
         if col not in df.columns:
             log_validation_error(
                 load_batch_id=load_batch_id,
-                sheet_name=sheet_name,
+                sheet_name=shown_sheet,
                 column_name=col,
                 error_type="MISSING_COLUMN",
-                error_message=f"Missing required column '{col}' in sheet '{sheet_name}'",
+                error_message=f"Missing required column '{col}' in sheet '{shown_sheet}'",
             )
 
 
 def validate_workbook_data(load_batch_id: str, dataframes: dict):
     # Column checks only for canonical sheets that have REQUIRED_COLUMNS.
     # Skip intermediate/raw sheets (e.g. SUMMARY) that are transformed later.
+    resolved_sheets = dataframes.get("_resolved_sheets") or {}
     for sheet_name, df in dataframes.items():
         if sheet_name not in REQUIRED_COLUMNS:
             continue
-        validate_sheet_columns(load_batch_id, sheet_name, df)
+        display_name = resolved_sheets.get(sheet_name) or _source_sheet_name(df, sheet_name)
+        # Level2 is sourced from SUMMARY (or its alias).
+        if sheet_name == "Level2":
+            display_name = resolved_sheets.get("SUMMARY") or _source_sheet_name(df, "SUMMARY")
+        validate_sheet_columns(load_batch_id, sheet_name, df, display_sheet_name=display_name)
 
     # ProjectInformation should usually contain exactly 1 row
     pi_df = dataframes["ProjectInformation"]
+    pi_sheet = resolved_sheets.get("ProjectInformation") or _source_sheet_name(pi_df, "ProjectInformation")
     non_blank_rows = pi_df.dropna(how="all")
     if len(non_blank_rows) != 1:
         log_validation_error(
             load_batch_id,
-            "ProjectInformation",
+            pi_sheet,
             error_type="ROW_COUNT",
-            error_message="ProjectInformation should contain exactly 1 populated row",
+            error_message=f"{pi_sheet} should contain exactly 1 populated row",
             row_data={"observed_non_blank_rows": int(len(non_blank_rows))},
         )
 
     # Level2 total cost numeric check
     lvl2_df = dataframes["Level2"]
+    lvl2_sheet = resolved_sheets.get("SUMMARY") or _source_sheet_name(lvl2_df, "SUMMARY")
     if "TotalCost" in lvl2_df.columns:
         for idx, val in enumerate(lvl2_df["TotalCost"], start=2):
             if clean_value(val) is not None and to_decimal(val) is None:
                 log_validation_error(
                     load_batch_id,
-                    "Level2",
+                    lvl2_sheet,
                     row_num=idx,
                     column_name="TotalCost",
                     error_type="INVALID_NUMBER",
@@ -1587,6 +1672,7 @@ def validate_workbook_data(load_batch_id: str, dataframes: dict):
 
     # LineItem_L3 row type domain check
     l3_df = dataframes["LineItem_L3"]
+    l3_sheet = _source_sheet_name(l3_df, "Level 3 sheets")
     allowed_row_types = {"ITEM", "HEADING", "SUBTOTAL"}
     if "RowType" in l3_df.columns:
         for idx, val in enumerate(l3_df["RowType"], start=2):
@@ -1594,7 +1680,7 @@ def validate_workbook_data(load_batch_id: str, dataframes: dict):
             if cv is not None and str(cv).upper() not in allowed_row_types:
                 log_validation_error(
                     load_batch_id,
-                    "LineItem_L3",
+                    l3_sheet,
                     row_num=idx,
                     column_name="RowType",
                     error_type="DOMAIN",
@@ -1613,12 +1699,13 @@ def validate_workbook_data(load_batch_id: str, dataframes: dict):
 
     # ProjectQuants qty numeric check
     pq_df = dataframes["ProjectQuants"]
+    pq_sheet = resolved_sheets.get("ProjectQuants") or _source_sheet_name(pq_df, "ProjectQuants")
     if "Qty" in pq_df.columns:
         for idx, val in enumerate(pq_df["Qty"], start=2):
             if clean_value(val) is not None and to_decimal(val) is None:
                 log_validation_error(
                     load_batch_id,
-                    "ProjectQuants",
+                    pq_sheet,
                     row_num=idx,
                     column_name="Qty",
                     error_type="INVALID_NUMBER",
@@ -1904,6 +1991,7 @@ def stage_level2(load_batch_id: str, source_file: str, df: pd.DataFrame):
     decimal_meta = _get_decimal_metadata(STAGING_TABLES["Level2"])
     level2_decimal_cols = ("Rate", "TotalCost")
     precision_errors = 0
+    display_sheet = _source_sheet_name(df, "SUMMARY")
 
     for idx, row in df.iterrows():
         if is_effectively_blank_row(row):
@@ -1924,12 +2012,12 @@ def stage_level2(load_batch_id: str, source_file: str, df: pd.DataFrame):
         if mapped["TotalCost"] is None:
             log_validation_error(
                 load_batch_id=load_batch_id,
-                sheet_name="Level2",
+                sheet_name=display_sheet,
                 row_num=int(idx) + 2,
                 column_name="TotalCost",
                 error_type="MISSING_TOTALCOST_SKIPPED",
                 error_message=(
-                    "Skipped Level2 row because TotalCost is null/blank for selected contractor."
+                    f"Skipped {display_sheet} row because TotalCost is null/blank for selected contractor."
                 ),
                 severity="WARNING",
                 row_data={
@@ -1965,7 +2053,7 @@ def stage_level2(load_batch_id: str, source_file: str, df: pd.DataFrame):
                 precision_errors += 1
                 log_validation_error(
                     load_batch_id=load_batch_id,
-                    sheet_name="Level2",
+                    sheet_name=display_sheet,
                     row_num=int(idx) + 2,
                     column_name=dec_col,
                     error_type="DECIMAL_PRECISION",
@@ -1981,7 +2069,7 @@ def stage_level2(load_batch_id: str, source_file: str, df: pd.DataFrame):
 
     if precision_errors > 0:
         raise ValueError(
-            f"Level2 contains {precision_errors} value(s) that exceed SQL decimal precision/scale. "
+            f"{display_sheet} contains {precision_errors} value(s) that exceed SQL decimal precision/scale. "
             "See stg.ValidationError for row+column details."
         )
 
